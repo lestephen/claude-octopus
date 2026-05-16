@@ -39,7 +39,13 @@ if [[ -z "$OCTO_PLUGIN_ROOT" || ! -x "$OCTO_PLUGIN_ROOT/scripts/orchestrate.sh" 
   exit 1
 fi
 mkdir -p "${HOME}/.claude-octopus"
-ln -sfn "$OCTO_PLUGIN_ROOT" "${HOME}/.claude-octopus/plugin" 2>/dev/null || true
+# Resolve to a canonical path so we never create a self-referential symlink
+# when OCTO_PLUGIN_ROOT already IS ~/.claude-octopus/plugin (a working symlink).
+OCTO_PLUGIN_REAL="$(readlink -f "$OCTO_PLUGIN_ROOT" 2>/dev/null || echo "$OCTO_PLUGIN_ROOT")"
+OCTO_LINK_REAL="$(readlink -f "${HOME}/.claude-octopus/plugin" 2>/dev/null || echo "")"
+if [[ "$OCTO_PLUGIN_REAL" != "$OCTO_LINK_REAL" ]]; then
+  ln -sfn "$OCTO_PLUGIN_REAL" "${HOME}/.claude-octopus/plugin" 2>/dev/null || true
+fi
 export OCTO_PLUGIN_ROOT
 cd "$OCTO_PLUGIN_ROOT" && bash scripts/orchestrate.sh doctor --verbose
 ```
