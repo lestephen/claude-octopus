@@ -65,7 +65,7 @@ OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
 # Priority: OCTOPUS_PROJECT_DIR env var > $PWD > $OLDPWD (when $PWD is a
 # plugin-cache install dir, which can happen if a caller cd'd into the
 # plugin before invoking this script — historical pattern in the .claude
-# command markdown files prior to v9.38.0-petrics.1).
+# command markdown files prior to v9.38.0-lestephen.1).
 PROJECT_ROOT="${OCTOPUS_PROJECT_DIR:-${PWD}}"
 case "$PROJECT_ROOT" in
     */.claude/plugins/cache/*|*/.claude-octopus/plugin*)
