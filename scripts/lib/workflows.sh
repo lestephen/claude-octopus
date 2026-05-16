@@ -847,26 +847,66 @@ YOUR SUBTASK:
 EOF
 }
 
+# Recursively kill a process and all its descendants.
+# pkill -P kills only direct children; the codex/gemini spawn chain is
+# typically 4+ levels deep (bash → timeout → env → node → rust binary),
+# so a single pkill -P leaves grandchildren orphaned. Walk the tree.
+_tangle_kill_tree() {
+    local pid="$1"
+    [[ -z "$pid" ]] && return 0
+    # Recurse into children before killing the parent so we don't lose
+    # the parent-child relationship needed for the walk.
+    local child
+    while read -r child; do
+        [[ -z "$child" || "$child" == "$pid" ]] && continue
+        _tangle_kill_tree "$child"
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+    kill -KILL "$pid" 2>/dev/null || true
+}
+
 # Kill a tangle subtask cleanly: SIGTERM the wrapper and its descendants,
-# wait briefly, then SIGKILL. Write a `timeout` marker to the .done file
-# so the outer reporting loop counts it as a failed subtask.
+# wait briefly, then SIGKILL the whole tree. Write a `timeout` marker to
+# the .done file so the outer reporting loop counts it as a failed subtask.
 _tangle_kill_subtask() {
     local wrapper_pid="$1"
     local task_id="$2"
     local done_file="$3"
 
     if [[ -n "$wrapper_pid" ]]; then
+        # Polite first pass — SIGTERM so providers can flush partial state.
         pkill -TERM -P "$wrapper_pid" 2>/dev/null || true
         kill -TERM "$wrapper_pid" 2>/dev/null || true
         sleep 1
-        pkill -KILL -P "$wrapper_pid" 2>/dev/null || true
-        kill -KILL "$wrapper_pid" 2>/dev/null || true
+        # Full descendant walk to kill orphaned grandchildren.
+        _tangle_kill_tree "$wrapper_pid"
     fi
 
     mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
     if [[ ! -f "$done_file" ]] && ! echo "timeout" > "$done_file" 2>/dev/null; then
         log WARN "Failed to write timeout marker for ${task_id} at $done_file"
     fi
+}
+
+# Cleanup trap for tangle_develop. Called on EXIT/SIGTERM/SIGINT so that
+# every spawned subtask's process tree gets killed when the orchestrator
+# is interrupted — preventing zombie codex/gemini subprocesses from
+# continuing to modify files after a TaskStop/Ctrl-C.
+#
+# The previous behavior (no trap, no descendant walk) caused orphaned
+# subtrees to keep running for the full subtask timeout after the parent
+# was killed, racing with any subsequent /octo:develop invocation on the
+# same prompt and corrupting working-tree state.
+_tangle_cleanup_all() {
+    local exit_code=$?
+    local pid
+    for pid in "${_TANGLE_TRACKED_PIDS[@]:-}"; do
+        [[ -z "$pid" ]] && continue
+        if kill -0 "$pid" 2>/dev/null; then
+            _tangle_kill_tree "$pid"
+        fi
+    done
+    _TANGLE_TRACKED_PIDS=()
+    return $exit_code
 }
 
 # Phase 3: TANGLE (Develop) - Enhanced map-reduce with validation
@@ -999,6 +1039,19 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
     local agents=()
     local subtasks_raw=()
 
+    # v9.38.0-lestephen.9: install a cleanup trap that walks every spawned
+    # subtask's process tree on EXIT/SIGTERM/SIGINT. Without this, a
+    # TaskStop or Ctrl-C against orchestrate.sh kills only the wrapper
+    # bash; the codex/gemini subprocess subtree (4+ levels deep) orphans
+    # to init and keeps running until its own timeout — long after the
+    # operator thought they cancelled the run. Worse: orphaned subtrees
+    # race any subsequent /octo:develop on the same prompt, corrupting
+    # working-tree state. Trap fires once per tangle_develop call.
+    _TANGLE_TRACKED_PIDS=()
+    trap '_tangle_cleanup_all' EXIT
+    trap '_tangle_cleanup_all; exit 130' SIGINT
+    trap '_tangle_cleanup_all; exit 143' SIGTERM
+
     # Checkpoint protocol gates the prompt wrapping below.
     local _checkpoint_proto="${OCTOPUS_TANGLE_CHECKPOINTS:-true}"
     local _checkpoint_header=""
@@ -1053,6 +1106,10 @@ ${subtask}"
         task_ids+=("$task_id")
         agents+=("$agent")
         subtasks_raw+=("$subtask")  # unwrapped, for potential resume
+        # v9.38.0-lestephen.9: register the spawned PID with the cleanup
+        # trap so it gets descendant-killed if tangle_develop is
+        # interrupted partway through.
+        _TANGLE_TRACKED_PIDS+=("$pid")
         ((subtask_num++)) || true
     done <<< "$subtasks"
     fleet_dispatch_end
@@ -1214,6 +1271,8 @@ ${subtasks_raw[$idx]}"
             # Update bookkeeping so completion is tracked against the new task_id
             task_ids[$idx]="$_resume_task_id"
             pids[$idx]="$_rpid"
+            # v9.38.0-lestephen.9: also register resume PIDs with the cleanup trap.
+            _TANGLE_TRACKED_PIDS+=("$_rpid")
         done
 
         # Second wait loop for the resumed subtasks (shorter ceiling — these
@@ -1278,6 +1337,13 @@ ${subtasks_raw[$idx]}"
     if command -v record_agents_batch_complete &> /dev/null; then
         record_agents_batch_complete "tangle" "$task_group" 2>/dev/null || true
     fi
+
+    # v9.38.0-lestephen.9: clear the interrupt traps now that subtasks
+    # have finished (or been killed). Subsequent phases (ink_deliver,
+    # quality gates) shouldn't trigger _tangle_cleanup_all if THEY get
+    # interrupted — their cleanup needs are different.
+    _TANGLE_TRACKED_PIDS=()
+    trap - EXIT SIGINT SIGTERM
 
     # Step 3: Validation gate
     log INFO "Step 3: Validation gate..."
