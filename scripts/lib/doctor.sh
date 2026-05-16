@@ -1394,7 +1394,7 @@ doctor_check_recurrence() {
                     line_epoch=$(date -d "$ts" +%s 2>/dev/null || echo "0")
                 fi
                 if [[ "$line_epoch" -ge "$cutoff_epoch" ]]; then
-                    ((recent_failures++))
+                    ((recent_failures++)) || true
                 fi
             fi
         done < <(grep '"type":"quality-gate"' "$jsonl_file" 2>/dev/null || true)
