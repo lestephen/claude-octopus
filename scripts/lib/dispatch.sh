@@ -37,22 +37,39 @@ get_agent_command() {
 
     local sandbox_flag="--sandbox ${codex_sandbox}"
 
+    # Configurable approval policy for headless mode
+    # Priority: OCTOPUS_CODEX_APPROVAL env var > default (never)
+    # Required because users may set approval_policy=on-request in
+    # ~/.codex/config.toml, which hangs headless `codex exec`.
+    # Valid values: never (default), on-request, on-failure, unattended
+    local codex_approval="${OCTOPUS_CODEX_APPROVAL:-never}"
+    case "$codex_approval" in
+        never|on-request|on-failure|unattended)
+            ;;
+        *)
+            log "ERROR" "Invalid OCTOPUS_CODEX_APPROVAL value: '${codex_approval}'. Allowed: never, on-request, on-failure, unattended"
+            log "ERROR" "Falling back to 'never' for headless safety."
+            codex_approval="never"
+            ;;
+    esac
+    local approval_flag="-c approval_policy=${codex_approval}"
+
     case "$agent_type" in
         codex|codex-standard|codex-max|codex-mini|codex-general)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
             ;;
         codex-spark)  # v8.9.0: Ultra-fast Spark model (1000+ tok/s)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
             ;;
         codex-reasoning)  # v8.9.0: Reasoning models (o3, o3)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
             ;;
         codex-large-context)  # v8.9.0: 1M context models (gpt-4.1)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
+            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
             ;;
         gemini|gemini-fast|gemini-image)
             model=$(get_agent_model "$agent_type" "$phase" "$role")
