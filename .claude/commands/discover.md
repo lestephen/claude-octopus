@@ -30,7 +30,7 @@ When the user invokes this command (e.g., `/octo:discover <arguments>`):
 
 **✓ CORRECT - Run the orchestrated probe workflow:**
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh probe <user's arguments>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe <user's arguments>
 ```
 
 **✗ INCORRECT:**
@@ -94,10 +94,10 @@ After receiving answers, incorporate them into the `orchestrate.sh probe` invoca
 ### Step 2: Run Discovery via orchestrate.sh
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh probe [intensity=quick|standard|deep] <user's arguments>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe [intensity=quick|standard|deep] <user's arguments>
 ```
 
-Example: `cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh probe [intensity=standard] OAuth authentication patterns`
+Example: `bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe [intensity=standard] OAuth authentication patterns`
 
 ### Step 3: Post-Completion — Interactive Next Steps
 

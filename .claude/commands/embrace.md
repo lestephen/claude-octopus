@@ -143,7 +143,7 @@ Scope: [answer]  Focus: [answer]  Autonomy: [answer]
 Run the Discover phase via orchestrate.sh:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh probe <user's prompt>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe <user's prompt>
 ```
 
 This will dispatch to Codex, Gemini, and other available providers. Results saved to `~/.claude-octopus/results/probe-synthesis-*.md`.
@@ -156,7 +156,7 @@ This will dispatch to Codex, Gemini, and other available providers. Results save
 Run the define phase via orchestrate.sh:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh grasp <user's prompt>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" grasp <user's prompt>
 ```
 
 This builds consensus across providers. Results saved to `~/.claude-octopus/results/grasp-consensus-*.md`.
@@ -195,7 +195,7 @@ AskUserQuestion({
 Run the develop phase via orchestrate.sh:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh tangle <user's prompt>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" tangle <user's prompt>
 ```
 
 This dispatches implementation with quality gates. Results saved to `~/.claude-octopus/results/tangle-validation-*.md`.
@@ -209,7 +209,7 @@ Same pattern as above but collaborative style, reviewing implementation quality.
 Run the deliver phase via orchestrate.sh:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh ink <user's prompt>
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" ink <user's prompt>
 ```
 
 This runs multi-provider validation. Results saved to `~/.claude-octopus/results/delivery-*.md`.

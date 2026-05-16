@@ -91,13 +91,13 @@ Execute each selected fix, verify it worked, report results.
 If the user asks about a specific area:
 
 ```bash
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor providers
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor auth
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor config
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor hooks
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor scheduler
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor skills
-cd "${HOME}/.claude-octopus/plugin" && bash scripts/orchestrate.sh doctor agents
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor providers
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor auth
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor config
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor hooks
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor scheduler
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor skills
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" doctor agents
 ```
 
 ## Step 5: Token Optimization Report
