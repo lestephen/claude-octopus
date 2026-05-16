@@ -1310,21 +1310,76 @@ doctor_check_agents() {
     doctor_add "agents-worktree" "agents" "pass" \
         "${worktree_agents} agents with worktree isolation" ""
 
-    if [[ "$SUPPORTS_AGENTS_CLI" == "true" ]]; then
-        local cli_output
-        cli_output=$(claude agents 2>/dev/null | head -20 || echo "")
-        if [[ -n "$cli_output" ]]; then
-            local cli_count
-            cli_count=$(echo "$cli_output" | grep -c "^" || echo "0")
-            doctor_add "agents-cli" "agents" "pass" \
-                "Claude agents CLI: ${cli_count} agents registered" ""
+    # Verify Claude Code will actually load octo's agents at runtime.
+    # Two-step: (1) plugin enabled in settings, (2) plugin schema parses.
+    #
+    # Historical note: prior versions invoked `claude agents` expecting a
+    # `claude agents list` subcommand that never existed. CC v2.1.139+
+    # `claude agents` opens the interactive Agent View TUI (for managing
+    # background sessions, unrelated to plugin-declared subagents) and
+    # produces no parseable output. This check uses stable interfaces:
+    # the user's settings.json enabledPlugins map and `claude plugin
+    # validate`, both of which directly answer "will my agents load?".
+    local agents_enabled_status="unknown"
+    local agents_enabled_msg=""
+    local agents_enabled_detail=""
+    if command -v jq >/dev/null 2>&1; then
+        local settings_file
+        for settings_file in "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json"; do
+            [[ -f "$settings_file" ]] || continue
+            local entries
+            entries=$(jq -r '
+                .enabledPlugins // {}
+                | to_entries[]
+                | select(.key | startswith("octo@"))
+                | "\(.key)=\(.value)"
+            ' "$settings_file" 2>/dev/null || echo "")
+            [[ -z "$entries" ]] && continue
+            local active=() disabled=()
+            while IFS='=' read -r key value; do
+                [[ -z "$key" ]] && continue
+                if [[ "$value" == "true" ]]; then
+                    active+=("$key")
+                else
+                    disabled+=("$key")
+                fi
+            done <<< "$entries"
+            if [[ ${#active[@]} -ge 1 ]]; then
+                agents_enabled_status="pass"
+                agents_enabled_msg="octo plugin enabled in CC: ${active[*]}"
+                agents_enabled_detail="Claude Code will register octo's agents at session start"
+            elif [[ ${#disabled[@]} -ge 1 ]]; then
+                agents_enabled_status="warn"
+                agents_enabled_msg="octo plugin entries present but all disabled: ${disabled[*]}"
+                agents_enabled_detail="Run 'claude plugin enable <name>' or set enabledPlugins.\"<name>\"=true in $settings_file"
+            fi
+            break
+        done
+    fi
+    case "$agents_enabled_status" in
+        pass|warn)
+            doctor_add "agents-enabled" "agents" "$agents_enabled_status" \
+                "$agents_enabled_msg" "$agents_enabled_detail"
+            ;;
+        *)
+            doctor_add "agents-enabled" "agents" "info" \
+                "octo not configured via enabledPlugins (manual/dev install)" \
+                "Manual installs use the ~/.claude-octopus/plugin symlink; CC marketplace installs add an enabledPlugins entry"
+            ;;
+    esac
+
+    # Schema validation: catches broken agent YAML that CC would silently skip.
+    if command -v claude >/dev/null 2>&1 \
+        && [[ -n "${CLAUDE_CODE_VERSION:-}" ]] \
+        && version_compare "$CLAUDE_CODE_VERSION" "2.1.77" ">=" 2>/dev/null; then
+        if claude plugin validate "$PLUGIN_DIR" >/dev/null 2>&1; then
+            doctor_add "agents-validate" "agents" "pass" \
+                "claude plugin validate: no schema errors in agents/, commands/, hooks.json" ""
         else
-            doctor_add "agents-cli" "agents" "warn" \
-                "Claude agents CLI returned no data" "Run 'claude agents' manually"
+            doctor_add "agents-validate" "agents" "warn" \
+                "claude plugin validate reported issues" \
+                "Run 'claude plugin validate $PLUGIN_DIR' to see details"
         fi
-    else
-        doctor_add "agents-cli" "agents" "info" \
-            "Claude agents CLI not available (requires v2.1.50+)" ""
     fi
 
     if [[ -n "${CLAUDE_CODE_VERSION:-}" ]]; then
