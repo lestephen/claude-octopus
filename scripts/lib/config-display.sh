@@ -860,11 +860,25 @@ setup_wizard() {
 
 check_first_run() {
     if [[ ! -f "$SETUP_CONFIG_FILE" ]]; then
-        # Check if any required component is missing
+        # Codex auth: either env var OR ~/.codex/auth.json (the `codex login`
+        # default). Mirrors doctor_check_auth at lib/doctor.sh:347.
+        local codex_authed=false
+        if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -f "$HOME/.codex/auth.json" ]]; then
+            codex_authed=true
+        fi
+        # Gemini auth: any of GEMINI_API_KEY / GOOGLE_API_KEY / OAuth creds.
+        # Mirrors doctor_check_auth at lib/doctor.sh:360.
+        local gemini_authed=false
+        if [[ -n "${GEMINI_API_KEY:-}" ]] || \
+           [[ -n "${GOOGLE_API_KEY:-}" ]] || \
+           [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+            gemini_authed=true
+        fi
+
         if ! command -v codex &>/dev/null || \
            ! command -v gemini &>/dev/null || \
-           [[ -z "${OPENAI_API_KEY:-}" ]] || \
-           [[ -z "${GEMINI_API_KEY:-}" ]]; then
+           [[ "$codex_authed" == "false" ]] || \
+           [[ "$gemini_authed" == "false" ]]; then
             echo ""
             echo -e "${YELLOW}🐙 First time? Run the configuration wizard to get started:${NC}"
             echo -e "   ${CYAN}./scripts/orchestrate.sh octopus-configure${NC}"
