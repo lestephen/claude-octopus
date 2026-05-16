@@ -91,6 +91,14 @@ get_agent_command() {
             case "${OCTOPUS_GEMINI_SANDBOX:-headless}" in
                 interactive|prompt-mode) gemini_flags="" ;;
             esac
+            # Pin Gemini's workspace to the project root explicitly so writes
+            # outside Gemini's auto-detected cwd-basename dir are allowed.
+            # Without this, writes to $PROJECT_ROOT/... can be refused as
+            # "outside workspace" when Gemini's auto-detected workspace
+            # differs from PROJECT_ROOT (e.g. when invoked from a subdir).
+            if [[ -n "${PROJECT_ROOT:-}" && "$gemini_flags" == *"--approval-mode yolo"* ]]; then
+                gemini_flags+=" --include-directories ${PROJECT_ROOT}"
+            fi
             echo "${gemini_env} ${gemini_exec} ${model} ${gemini_flags}"
             ;;
         codex-review) echo "codex exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
