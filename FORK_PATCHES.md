@@ -1,6 +1,6 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 8 commits on top of `upstream/main` (currently at
+This fork carries 10 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags.
 
@@ -22,12 +22,22 @@ maintainer can `git am patches/000N-*.patch` to apply individually.
 | 6 | `6d577b1` | fix  | Doctor: accept skill dirs, not just files | **Yes — small obvious fix** |
 | 7 | `2e74c52` | chore | Rename patch series comment | No — fork-only naming |
 | 8 | `be5596b` | fix  | Doctor: silent exit on `((counter++))` from 0 | **Yes — trivially correct** |
+| 9 | `c301321` | docs | Add `FORK_PATCHES.md` and `patches/`  | No — fork-only documentation |
+| 10 | `80cf27f` | fix | Doctor: replace bogus `claude agents` check with enabledPlugins + plugin validate | **Yes — clear bug with documented fix** |
 
-**Highest-value upstream PR candidates: #5, #6, #8** — small, obviously
-correct, no behavior change for end users. #2 and #4 are clear bug
-fixes/enhancements but touch user-visible workflow paths so warrant
-more discussion. #1 and #3 are feature additions and should be
-discussed with the maintainer before opening a PR.
+**Highest-value upstream PR candidates: #5, #6, #8, #10** — small,
+obviously correct, no behavior change for end users. #2 and #4 are
+clear bug fixes/enhancements but touch user-visible workflow paths
+so warrant more discussion. #1 and #3 are feature additions and
+should be discussed with the maintainer before opening a PR.
+
+> Note on numbering: the # column matches the order in `patches/`
+> (`git format-patch upstream/main..lestephen-patches`). Sections
+> below mirror this. Throughout the release notes and release tags,
+> patches are sometimes referenced by their semantic order (e.g.
+> "Patch #9" in the v9.38.0-lestephen.5 release notes refers to the
+> *code* patch shipped in that release — commit `80cf27f`, listed as
+> row #10 here because of the intervening docs commit).
 
 ---
 
@@ -409,6 +419,119 @@ SUCCESS: State file already exists and is valid
 > Reproducer: any install with `quality-gate` decisions logged in the
 > last 48h hits this. After the patch, `/octo:doctor` produces its
 > full 12-category report instead of exiting silently.
+
+---
+
+## Patch 9 — `docs: add FORK_PATCHES.md and patches/ for upstream PR submission`
+
+**Commit:** `c301321`
+
+**Not for upstream.** This document itself plus the `patches/` directory
+were added in this commit to make individual patches easy to submit to
+upstream. Fork-only by definition.
+
+---
+
+## Patch 10 — `fix(doctor): replace nonexistent 'claude agents list' check with enabledPlugins + plugin validate`
+
+**Commit:** `80cf27f`
+**Files:** `scripts/lib/doctor.sh` (+68 / -13)
+
+### Bug
+
+`doctor_check_agents` invokes `claude agents` and parses the output to
+report "N agents registered." The check was based on a
+`claude agents list` subcommand that has never existed in Claude Code.
+The orchestrate.sh:300 comment confirms the original intent:
+
+```bash
+SUPPORTS_AGENTS_CLI=false              # v8.19: Claude Code v2.1.50+ (claude agents list command)
+```
+
+What `claude agents` actually does:
+- **CC v2.1.139+:** opens the Agent View TUI for managing background
+  sessions (`claude --bg` dispatch, peek, attach, etc.) — unrelated
+  to plugin-declared subagents. Takes over the terminal, no parseable
+  output. Per [the docs](https://code.claude.com/docs/en/agent-view).
+- **Legacy / Bedrock / Vertex / Foundry:** prints a subagent count
+  and exits. Per the same docs (troubleshooting section), this
+  fallback indicates "agent view is unavailable in your environment"
+  — i.e. an outdated CC or non-Anthropic-API install.
+
+### Repro
+
+```bash
+# Inside any CC session, /octo:doctor:
+[agents]
+  ✓ 63 agent definitions found
+  ✓ 10 agents with worktree isolation
+  ⚠ Claude agents CLI returned no data  ← guaranteed false-positive
+  ✓ Claude Code v2.1.143 — multi-agent stable
+```
+
+Shell-side on modern CC, the check is worse — it opens the TUI in a
+subprocess and hangs until the parent times out.
+
+### Fix
+
+Replace with two stable checks that directly answer "will my agents
+load at session start?":
+
+**`agents-enabled`** — parse user's `~/.claude/settings.json` and
+`settings.local.json` for `enabledPlugins["octo@*"]` entries with
+`jq`:
+- `pass` if any `octo@<marketplace>` is enabled
+- `warn` if all `octo@*` entries are explicitly disabled
+- `info` if no `octo@*` entries exist (manual/dev install)
+
+**`agents-validate`** — gated on CC v2.1.77+ (when
+`claude plugin validate` shipped). Runs the schema validator against
+`$PLUGIN_DIR` and reports pass/warn based on exit code. Catches
+broken agent YAML that CC would silently skip at session start.
+
+### Suggested upstream PR title
+
+> `fix(doctor): replace nonexistent 'claude agents list' check with enabledPlugins + plugin validate`
+
+### Suggested upstream PR body
+
+> `doctor_check_agents` invokes `claude agents` expecting a
+> `claude agents list` subcommand. That subcommand has never existed.
+> In modern Claude Code (v2.1.139+) `claude agents` opens the Agent
+> View TUI for managing background sessions — unrelated to
+> plugin-declared subagents, and produces no parseable output. On
+> Bedrock/Vertex/Foundry it falls back to printing subagents and
+> exiting (per the official docs, this fallback signals "agent view
+> unavailable in your environment").
+>
+> Net effect: every `/octo:doctor` run inside a CC session produces a
+> guaranteed false-positive warn ("Claude agents CLI returned no
+> data"), and shell-side runs on modern CC hang the TUI in a
+> subprocess.
+>
+> The pass-message text ("N agents registered") suggests the original
+> intent was to verify Claude Code's runtime actually loaded the
+> agents declared in `agents/config.yaml`. This PR keeps that intent
+> with two stable, correct checks:
+>
+> 1. `agents-enabled` — parses user's `settings.json` `enabledPlugins`
+>    map for `octo@*` entries and reports pass/warn/info based on
+>    whether any are enabled.
+> 2. `agents-validate` — gated on CC v2.1.77+, runs
+>    `claude plugin validate "$PLUGIN_DIR"` and reports pass/warn
+>    based on exit code. Catches broken agent YAML that CC would
+>    silently skip.
+>
+> Sample healthy output:
+>
+> ```
+> [agents]
+>   ✓ 63 agent definitions found
+>   ✓ 10 agents with worktree isolation
+>   ✓ octo plugin enabled in CC: octo@lestephen-octo
+>   ✓ claude plugin validate: no schema errors in agents/, commands/, hooks.json
+>   ✓ Claude Code v2.1.143 — multi-agent stable
+> ```
 
 ---
 
