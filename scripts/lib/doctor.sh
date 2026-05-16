@@ -815,7 +815,9 @@ doctor_check_skills() {
         skill_path=$(jq -r ".skills[$i]" "$plugin_json" 2>/dev/null)
         # Resolve relative paths from plugin dir
         local resolved="${PLUGIN_DIR}/${skill_path#./}"
-        if [[ ! -f "$resolved" ]]; then
+        # Skills are directories containing SKILL.md, not single files.
+        # Accept either: a directory entry, or a regular file at the resolved path.
+        if [[ ! -d "$resolved" && ! -f "$resolved" ]]; then
             doctor_add "skill-missing-$(basename "$skill_path")" "skills" "fail" \
                 "Skill file missing: $(basename "$skill_path")" "$resolved"
             ((skill_missing++)) || true
