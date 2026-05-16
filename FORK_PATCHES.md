@@ -1,6 +1,6 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 10 commits on top of `upstream/main` (currently at
+This fork carries 13 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags.
 
@@ -24,8 +24,11 @@ maintainer can `git am patches/000N-*.patch` to apply individually.
 | 8 | `be5596b` | fix  | Doctor: silent exit on `((counter++))` from 0 | **Yes — trivially correct** |
 | 9 | `c301321` | docs | Add `FORK_PATCHES.md` and `patches/`  | No — fork-only documentation |
 | 10 | `80cf27f` | fix | Doctor: replace bogus `claude agents` check with enabledPlugins + plugin validate | **Yes — clear bug with documented fix** |
+| 11 | `eff1cd5` | docs | Update `FORK_PATCHES.md` for v9.38.0-lestephen.5 | No — fork-only documentation |
+| 12 | `a59f241` | fix | Setup: `check_first_run` recognizes codex/gemini alternate auth | **Yes — clear bug, mirrors existing doctor logic** |
+| 13 | `5ab8c3b` | chore | Remove dead `SUPPORTS_AGENTS_CLI` flag | Bundle with #10 — depends on it |
 
-**Highest-value upstream PR candidates: #5, #6, #8, #10** — small,
+**Highest-value upstream PR candidates: #5, #6, #8, #10, #12** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
 clear bug fixes/enhancements but touch user-visible workflow paths
 so warrant more discussion. #1 and #3 are feature additions and
@@ -532,6 +535,121 @@ broken agent YAML that CC would silently skip at session start.
 >   ✓ claude plugin validate: no schema errors in agents/, commands/, hooks.json
 >   ✓ Claude Code v2.1.143 — multi-agent stable
 > ```
+
+---
+
+## Patch 11 — `docs: update FORK_PATCHES.md and patches/ for v9.38.0-lestephen.5`
+
+**Commit:** `eff1cd5`
+
+**Not for upstream.** Documentation refresh for the previous release.
+
+---
+
+## Patch 12 — `fix(setup): recognize codex auth.json and gemini OAuth in check_first_run`
+
+**Commit:** `a59f241`
+**Files:** `scripts/lib/config-display.sh` (+17 / -3)
+
+### Bug
+
+`check_first_run` in `scripts/lib/config-display.sh` gates the
+"🐙 First time? Run the configuration wizard to get started:" hint on
+the presence of `OPENAI_API_KEY` and `GEMINI_API_KEY` env vars
+exclusively. The hint fires on every `orchestrate.sh` invocation for
+users who authenticated via:
+
+- **`codex login`** — stores credentials in `~/.codex/auth.json`, not
+  `OPENAI_API_KEY`
+- **Interactive Gemini OAuth** — stores credentials in
+  `~/.gemini/oauth_creds.json`, not `GEMINI_API_KEY`
+
+Both of these are common and well-supported auth methods that
+`doctor_check_auth` at `lib/doctor.sh:347,360` already correctly
+recognizes (it reports `✓ Codex authenticated via auth.json` and
+`✓ Gemini authenticated`). Only `check_first_run` was env-var-only.
+
+### Repro
+
+```bash
+# Set up Codex via the recommended interactive flow:
+codex login   # stores ~/.codex/auth.json, doesn't set OPENAI_API_KEY
+
+# Run any octo workflow:
+bash scripts/orchestrate.sh doctor
+
+# Output begins with:
+🐙 First time? Run the configuration wizard to get started:
+   ./scripts/orchestrate.sh octopus-configure
+SUCCESS: State file already exists and is valid
+[Claude Octopus Doctor]
+...
+
+# The "First time?" hint appears every single run, despite the user
+# being correctly authenticated and doctor reporting healthy.
+```
+
+### Fix
+
+Mirror `doctor_check_auth`'s detection: accept `~/.codex/auth.json` OR
+`OPENAI_API_KEY` for Codex; accept any of `GEMINI_API_KEY` /
+`GOOGLE_API_KEY` / `~/.gemini/oauth_creds.json` for Gemini.
+
+```bash
+local codex_authed=false
+if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -f "$HOME/.codex/auth.json" ]]; then
+    codex_authed=true
+fi
+local gemini_authed=false
+if [[ -n "${GEMINI_API_KEY:-}" ]] || \
+   [[ -n "${GOOGLE_API_KEY:-}" ]] || \
+   [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+    gemini_authed=true
+fi
+```
+
+### Suggested upstream PR title
+
+> `fix(setup): check_first_run should recognize codex auth.json and gemini OAuth`
+
+### Suggested upstream PR body
+
+> `check_first_run` in `scripts/lib/config-display.sh` only recognizes
+> `OPENAI_API_KEY` and `GEMINI_API_KEY` env vars as valid auth, so the
+> "🐙 First time?" hint persistently fires for users who authenticated
+> via `codex login` (stores `~/.codex/auth.json`) or interactive
+> Gemini OAuth (stores `~/.gemini/oauth_creds.json`) — the most common
+> setup methods.
+>
+> `doctor_check_auth` at `lib/doctor.sh:347,360` already has the
+> correct multi-method detection. This PR mirrors that logic in
+> `check_first_run`, so the hint only fires when something is
+> genuinely missing.
+
+---
+
+## Patch 13 — `chore: remove dead SUPPORTS_AGENTS_CLI flag`
+
+**Commit:** `5ab8c3b`
+**Files:** `scripts/orchestrate.sh` (-1), `scripts/lib/providers.sh` (-2 +1)
+
+### Background
+
+After Patch #10 replaced the bogus `claude agents` doctor check, the
+`SUPPORTS_AGENTS_CLI` flag is unused. It was originally set in
+`providers.sh` (for CC v2.1.50+), declared in `orchestrate.sh` with
+the incorrect comment `# claude agents list command` (no such
+subcommand has ever existed), and logged in providers.sh's
+feature-summary line.
+
+### Fix
+
+Remove all three references. No behavior change.
+
+### Upstream PR strategy
+
+Bundle with Patch #10 when submitting upstream — depends on Patch #10
+removing the consumer.
 
 ---
 

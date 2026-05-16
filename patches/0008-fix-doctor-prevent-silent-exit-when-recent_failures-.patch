@@ -1,7 +1,7 @@
 From be5596b6dd717c37aa75d4a65a12558ebe595ef6 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 12:39:47 -0700
-Subject: [PATCH 08/10] fix(doctor): prevent silent exit when recent_failures
+Subject: [PATCH 08/13] fix(doctor): prevent silent exit when recent_failures
  starts at 0
 
 ((recent_failures++)) returns exit status 1 on the first increment because

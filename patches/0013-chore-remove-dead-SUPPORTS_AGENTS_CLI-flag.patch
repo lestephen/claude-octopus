@@ -1,0 +1,56 @@
+From 5ab8c3b25fa74cfebab8a1f6ff8f5801986ee541 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 14:42:29 -0700
+Subject: [PATCH 13/13] chore: remove dead SUPPORTS_AGENTS_CLI flag
+
+After the previous commit replaced the 'claude agents list' check with
+enabledPlugins + plugin validate, nothing in the codebase reads
+SUPPORTS_AGENTS_CLI. The flag was set in providers.sh, declared in
+orchestrate.sh with an incorrect 'claude agents list command' comment
+(no such subcommand has ever existed), and logged in providers.sh's
+feature-summary line. All three references removed; the misleading
+comment goes with it.
+
+No behavior change.
+
+diff --git a/scripts/lib/providers.sh b/scripts/lib/providers.sh
+index da520e6..1c039ae 100644
+--- a/scripts/lib/providers.sh
++++ b/scripts/lib/providers.sh
+@@ -189,11 +189,10 @@ detect_claude_code_version() {
+         SUPPORTS_SDK_MODEL_CAPS=true
+     fi
+ 
+-    # Check for v2.1.50+ features (worktree isolation, worktree hooks, agents CLI, fast opus 1M)
++    # Check for v2.1.50+ features (worktree isolation, worktree hooks, fast opus 1M)
+     if version_compare "$CLAUDE_CODE_VERSION" "2.1.50" ">="; then
+         SUPPORTS_WORKTREE_ISOLATION=true
+         SUPPORTS_WORKTREE_HOOKS=true
+-        SUPPORTS_AGENTS_CLI=true
+         SUPPORTS_FAST_OPUS_1M=true
+     fi
+ 
+@@ -478,7 +477,7 @@ detect_claude_code_version() {
+     log "INFO" "Sonnet 4.6: $SUPPORTS_SONNET_46 | Per-Project Plugins: $SUPPORTS_PER_PROJECT_PLUGINS"
+     log "INFO" "Stable BG Agents: $SUPPORTS_STABLE_BG_AGENTS | Hook Last Message: $SUPPORTS_HOOK_LAST_MESSAGE | Agent Model Field: $SUPPORTS_AGENT_MODEL_FIELD"
+     log "INFO" "ConfigChange Hook: $SUPPORTS_CONFIG_CHANGE_HOOK | Plugin Scope Auto: $SUPPORTS_PLUGIN_SCOPE_AUTODETECT | SDK Model Caps: $SUPPORTS_SDK_MODEL_CAPS"
+-    log "INFO" "Worktree Isolation: $SUPPORTS_WORKTREE_ISOLATION | Worktree Hooks: $SUPPORTS_WORKTREE_HOOKS | Agents CLI: $SUPPORTS_AGENTS_CLI | Fast Opus 1M: $SUPPORTS_FAST_OPUS_1M"
++    log "INFO" "Worktree Isolation: $SUPPORTS_WORKTREE_ISOLATION | Worktree Hooks: $SUPPORTS_WORKTREE_HOOKS | Fast Opus 1M: $SUPPORTS_FAST_OPUS_1M"
+     log "INFO" "Remote Control: $SUPPORTS_REMOTE_CONTROL | NPM Registries: $SUPPORTS_NPM_PLUGIN_REGISTRIES | Fast Bash: $SUPPORTS_FAST_BASH | Disk Persist: $SUPPORTS_AGGRESSIVE_DISK_PERSIST"
+     log "INFO" "Native Auto-Memory: $SUPPORTS_NATIVE_AUTO_MEMORY | Agent Memory GC: $SUPPORTS_AGENT_MEMORY_GC | Smart Bash Prefixes: $SUPPORTS_SMART_BASH_PREFIXES"
+     log "INFO" "HTTP Hooks: $SUPPORTS_HTTP_HOOKS | Shared WT Config: $SUPPORTS_WORKTREE_SHARED_CONFIG | Batch: $SUPPORTS_BATCH_COMMAND | MCP Opt-Out: $SUPPORTS_MCP_OPT_OUT"
+diff --git a/scripts/orchestrate.sh b/scripts/orchestrate.sh
+index b5ae278..25dc362 100755
+--- a/scripts/orchestrate.sh
++++ b/scripts/orchestrate.sh
+@@ -297,7 +297,6 @@ SUPPORTS_PLUGIN_SCOPE_AUTODETECT=false # v8.19: Claude Code v2.1.49+ (plugin ena
+ SUPPORTS_SDK_MODEL_CAPS=false          # v8.19: Claude Code v2.1.49+ (supportsEffort, supportedEffortLevels)
+ SUPPORTS_WORKTREE_ISOLATION=false      # v8.19: Claude Code v2.1.50+ (isolation: worktree in agent defs)
+ SUPPORTS_WORKTREE_HOOKS=false          # v8.19: Claude Code v2.1.50+ (WorktreeCreate/WorktreeRemove hooks)
+-SUPPORTS_AGENTS_CLI=false              # v8.19: Claude Code v2.1.50+ (claude agents list command)
+ SUPPORTS_FAST_OPUS_1M=false            # v8.19: Claude Code v2.1.50+ (fast Opus 4.6 with full 1M context)
+ SUPPORTS_REMOTE_CONTROL=false           # v8.26: Claude Code v2.1.51+ (remote control API)
+ SUPPORTS_NPM_PLUGIN_REGISTRIES=false    # v8.26: Claude Code v2.1.51+ (custom npm registries for plugins)
+-- 
+2.53.0
+

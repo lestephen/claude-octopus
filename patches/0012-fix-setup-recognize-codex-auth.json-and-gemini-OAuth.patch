@@ -1,0 +1,58 @@
+From a59f241d01ff8e74a72b4dcd9375377f855968b7 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 14:42:18 -0700
+Subject: [PATCH 12/13] fix(setup): recognize codex auth.json and gemini OAuth
+ in check_first_run
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+check_first_run gates the 'First time?' onboarding hint on the presence
+of OPENAI_API_KEY and GEMINI_API_KEY env vars. This produces persistent
+noise on every orchestrate.sh invocation for the most common Codex auth
+method (~/.codex/auth.json from 'codex login') and Gemini OAuth setups
+(~/.gemini/oauth_creds.json from interactive 'gemini' login) — both of
+which doctor_check_auth at lib/doctor.sh:347,360 already correctly
+recognizes as valid auth.
+
+Mirror doctor's logic: treat ~/.codex/auth.json OR OPENAI_API_KEY as
+valid Codex auth, and any of GEMINI_API_KEY / GOOGLE_API_KEY /
+~/.gemini/oauth_creds.json as valid Gemini auth. Hint now only fires
+when something is genuinely missing.
+
+diff --git a/scripts/lib/config-display.sh b/scripts/lib/config-display.sh
+index cd77ac9..e9379f4 100644
+--- a/scripts/lib/config-display.sh
++++ b/scripts/lib/config-display.sh
+@@ -860,11 +860,25 @@ setup_wizard() {
+ 
+ check_first_run() {
+     if [[ ! -f "$SETUP_CONFIG_FILE" ]]; then
+-        # Check if any required component is missing
++        # Codex auth: either env var OR ~/.codex/auth.json (the `codex login`
++        # default). Mirrors doctor_check_auth at lib/doctor.sh:347.
++        local codex_authed=false
++        if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -f "$HOME/.codex/auth.json" ]]; then
++            codex_authed=true
++        fi
++        # Gemini auth: any of GEMINI_API_KEY / GOOGLE_API_KEY / OAuth creds.
++        # Mirrors doctor_check_auth at lib/doctor.sh:360.
++        local gemini_authed=false
++        if [[ -n "${GEMINI_API_KEY:-}" ]] || \
++           [[ -n "${GOOGLE_API_KEY:-}" ]] || \
++           [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
++            gemini_authed=true
++        fi
++
+         if ! command -v codex &>/dev/null || \
+            ! command -v gemini &>/dev/null || \
+-           [[ -z "${OPENAI_API_KEY:-}" ]] || \
+-           [[ -z "${GEMINI_API_KEY:-}" ]]; then
++           [[ "$codex_authed" == "false" ]] || \
++           [[ "$gemini_authed" == "false" ]]; then
+             echo ""
+             echo -e "${YELLOW}🐙 First time? Run the configuration wizard to get started:${NC}"
+             echo -e "   ${CYAN}./scripts/orchestrate.sh octopus-configure${NC}"
+-- 
+2.53.0
+
