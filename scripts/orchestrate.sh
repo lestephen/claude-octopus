@@ -62,7 +62,18 @@ fi
 OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
 
 # Workspace location - uses home directory for global installation
-PROJECT_ROOT="${PWD}"
+# Priority: OCTOPUS_PROJECT_DIR env var > $PWD > $OLDPWD (when $PWD is a
+# plugin-cache install dir, which can happen if a caller cd'd into the
+# plugin before invoking this script — historical pattern in the .claude
+# command markdown files prior to v9.38.0-petrics.1).
+PROJECT_ROOT="${OCTOPUS_PROJECT_DIR:-${PWD}}"
+case "$PROJECT_ROOT" in
+    */.claude/plugins/cache/*|*/.claude-octopus/plugin*)
+        if [[ -n "${OLDPWD:-}" ]]; then
+            PROJECT_ROOT="$OLDPWD"
+        fi
+        ;;
+esac
 
 # Source state manager utilities
 source "${SCRIPT_DIR}/state-manager.sh"
