@@ -1138,9 +1138,11 @@ ${subtask}"
                 continue
             fi
 
-            # Refresh checkpoint count for this subtask.
-            local _result_file="${RESULTS_DIR}/${agents[$i]}-${_task_id}.md"
-            bash "$_checkpoint_counter" "$_result_file" "$_ckpt_state" 2>/dev/null || true
+            # Refresh checkpoint count for this subtask. Scan the running
+            # provider streams (.tmp-${task_id}.err is where Codex writes
+            # during execution) — the assembled ${agent}-${task_id}.md
+            # only exists after spawn completion.
+            bash "$_checkpoint_counter" "$RESULTS_DIR" "$_task_id" "$_ckpt_state" 2>/dev/null || true
 
             local _ckpt_count
             _ckpt_count=$(head -1 "$_ckpt_state" 2>/dev/null || echo 0)
@@ -1241,8 +1243,7 @@ ${subtasks_raw[$idx]}"
                     continue
                 fi
                 if [[ "$_ckpt_aware" == "true" ]]; then
-                    local _rresult="${RESULTS_DIR}/${agents[$_ridx]}-${_rtask_id}.md"
-                    bash "$_checkpoint_counter" "$_rresult" "$_rckpt" 2>/dev/null || true
+                    bash "$_checkpoint_counter" "$RESULTS_DIR" "$_rtask_id" "$_rckpt" 2>/dev/null || true
                 fi
             done
             echo -ne "\r${CYAN}Resume progress: $_resume_completed/${#_resume_indices[@]} resumed subtasks complete${NC}"
