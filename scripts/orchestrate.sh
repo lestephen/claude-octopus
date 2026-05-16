@@ -297,7 +297,6 @@ SUPPORTS_PLUGIN_SCOPE_AUTODETECT=false # v8.19: Claude Code v2.1.49+ (plugin ena
 SUPPORTS_SDK_MODEL_CAPS=false          # v8.19: Claude Code v2.1.49+ (supportsEffort, supportedEffortLevels)
 SUPPORTS_WORKTREE_ISOLATION=false      # v8.19: Claude Code v2.1.50+ (isolation: worktree in agent defs)
 SUPPORTS_WORKTREE_HOOKS=false          # v8.19: Claude Code v2.1.50+ (WorktreeCreate/WorktreeRemove hooks)
-SUPPORTS_AGENTS_CLI=false              # v8.19: Claude Code v2.1.50+ (claude agents list command)
 SUPPORTS_FAST_OPUS_1M=false            # v8.19: Claude Code v2.1.50+ (fast Opus 4.6 with full 1M context)
 SUPPORTS_REMOTE_CONTROL=false           # v8.26: Claude Code v2.1.51+ (remote control API)
 SUPPORTS_NPM_PLUGIN_REGISTRIES=false    # v8.26: Claude Code v2.1.51+ (custom npm registries for plugins)
