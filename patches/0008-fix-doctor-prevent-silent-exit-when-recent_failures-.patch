@@ -1,0 +1,27 @@
+From be5596b6dd717c37aa75d4a65a12558ebe595ef6 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 12:39:47 -0700
+Subject: [PATCH 8/8] fix(doctor): prevent silent exit when recent_failures
+ starts at 0
+
+((recent_failures++)) returns exit status 1 on the first increment because
+the pre-increment value is 0, which under 'set -eo pipefail' silently
+terminates do_doctor before any output is rendered. Apply the same
+'|| true' guard already used on line 259 for the symmetric counter.
+
+diff --git a/scripts/lib/doctor.sh b/scripts/lib/doctor.sh
+index 292198b..8c2971e 100755
+--- a/scripts/lib/doctor.sh
++++ b/scripts/lib/doctor.sh
+@@ -1394,7 +1394,7 @@ doctor_check_recurrence() {
+                     line_epoch=$(date -d "$ts" +%s 2>/dev/null || echo "0")
+                 fi
+                 if [[ "$line_epoch" -ge "$cutoff_epoch" ]]; then
+-                    ((recent_failures++))
++                    ((recent_failures++)) || true
+                 fi
+             fi
+         done < <(grep '"type":"quality-gate"' "$jsonl_file" 2>/dev/null || true)
+-- 
+2.53.0
+

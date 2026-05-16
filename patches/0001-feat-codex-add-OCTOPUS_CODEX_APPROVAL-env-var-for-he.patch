@@ -1,0 +1,75 @@
+From 6982bca948fb380831e0dfd30ed12d4d4b8fdf77 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 11:56:27 -0700
+Subject: [PATCH 1/8] feat(codex): add OCTOPUS_CODEX_APPROVAL env var for
+ headless approval policy
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Inject -c approval_policy=${OCTOPUS_CODEX_APPROVAL:-never} into every
+codex exec line emitted by lib/dispatch.sh::get_command_line.
+
+Without this, users with global ~/.codex/config.toml set to
+approval_policy=on-request (the Codex CLI default for interactive use)
+hit indefinite hangs when orchestrate.sh tangle/develop invokes
+codex exec headlessly — the prompt has nobody to answer.
+
+Default 'never' preserves headless safety. Override per-shell with
+OCTOPUS_CODEX_APPROVAL=on-request when interactive approval is desired
+without touching the global config.
+
+Valid values: never (default), on-request, on-failure, unattended.
+Invalid values fall back to 'never' with an ERROR log.
+
+diff --git a/scripts/lib/dispatch.sh b/scripts/lib/dispatch.sh
+index a06679e..03eef53 100755
+--- a/scripts/lib/dispatch.sh
++++ b/scripts/lib/dispatch.sh
+@@ -37,22 +37,39 @@ get_agent_command() {
+ 
+     local sandbox_flag="--sandbox ${codex_sandbox}"
+ 
++    # Configurable approval policy for headless mode
++    # Priority: OCTOPUS_CODEX_APPROVAL env var > default (never)
++    # Required because users may set approval_policy=on-request in
++    # ~/.codex/config.toml, which hangs headless `codex exec`.
++    # Valid values: never (default), on-request, on-failure, unattended
++    local codex_approval="${OCTOPUS_CODEX_APPROVAL:-never}"
++    case "$codex_approval" in
++        never|on-request|on-failure|unattended)
++            ;;
++        *)
++            log "ERROR" "Invalid OCTOPUS_CODEX_APPROVAL value: '${codex_approval}'. Allowed: never, on-request, on-failure, unattended"
++            log "ERROR" "Falling back to 'never' for headless safety."
++            codex_approval="never"
++            ;;
++    esac
++    local approval_flag="-c approval_policy=${codex_approval}"
++
+     case "$agent_type" in
+         codex|codex-standard|codex-max|codex-mini|codex-general)
+             model=$(get_agent_model "$agent_type" "$phase" "$role")
+-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
++            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
+             ;;
+         codex-spark)  # v8.9.0: Ultra-fast Spark model (1000+ tok/s)
+             model=$(get_agent_model "$agent_type" "$phase" "$role")
+-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
++            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
+             ;;
+         codex-reasoning)  # v8.9.0: Reasoning models (o3, o3)
+             model=$(get_agent_model "$agent_type" "$phase" "$role")
+-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
++            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
+             ;;
+         codex-large-context)  # v8.9.0: 1M context models (gpt-4.1)
+             model=$(get_agent_model "$agent_type" "$phase" "$role")
+-            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} -"
++            echo "codex exec --skip-git-repo-check --model ${model} ${sandbox_flag} ${approval_flag} -"
+             ;;
+         gemini|gemini-fast|gemini-image)
+             model=$(get_agent_model "$agent_type" "$phase" "$role")
+-- 
+2.53.0
+

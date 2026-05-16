@@ -1,0 +1,28 @@
+From 6d577b1b4523075d4292d5c7ea1cd499e29f9042 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 12:19:26 -0700
+Subject: [PATCH 6/8] fix(doctor): accept skill directories, not just files
+
+Skills are directories containing SKILL.md, but doctor_check_skills
+tested with [[ ! -f "$resolved" ]] which failed for every skill,
+producing 51 false-positive 'Skill file missing' failures. Now accept
+either a directory or a regular file at the resolved path.
+
+diff --git a/scripts/lib/doctor.sh b/scripts/lib/doctor.sh
+index 17c421f..292198b 100755
+--- a/scripts/lib/doctor.sh
++++ b/scripts/lib/doctor.sh
+@@ -815,7 +815,9 @@ doctor_check_skills() {
+         skill_path=$(jq -r ".skills[$i]" "$plugin_json" 2>/dev/null)
+         # Resolve relative paths from plugin dir
+         local resolved="${PLUGIN_DIR}/${skill_path#./}"
+-        if [[ ! -f "$resolved" ]]; then
++        # Skills are directories containing SKILL.md, not single files.
++        # Accept either: a directory entry, or a regular file at the resolved path.
++        if [[ ! -d "$resolved" && ! -f "$resolved" ]]; then
+             doctor_add "skill-missing-$(basename "$skill_path")" "skills" "fail" \
+                 "Skill file missing: $(basename "$skill_path")" "$resolved"
+             ((skill_missing++)) || true
+-- 
+2.53.0
+

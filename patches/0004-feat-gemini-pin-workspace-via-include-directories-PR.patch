@@ -1,0 +1,39 @@
+From 0944f9d12204ea6ab84ec7e19bf0151a3092f478 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 11:57:49 -0700
+Subject: [PATCH 4/8] feat(gemini): pin workspace via --include-directories
+ ${PROJECT_ROOT}
+
+Append --include-directories ${PROJECT_ROOT} to the Gemini flag set
+when in headless mode (--approval-mode yolo present). Belt-and-
+suspenders for the orchestrate.sh PROJECT_ROOT fallback patch.
+
+Even if PROJECT_ROOT detection misfires for a yet-unknown caller
+shape, this guarantees Gemini sees the project as part of its
+workspace and can write to it without 'outside workspace' refusals.
+
+Only injected when headless flags are active (skips interactive
+mode where Gemini's own workspace detection applies).
+
+diff --git a/scripts/lib/dispatch.sh b/scripts/lib/dispatch.sh
+index 03eef53..1f4cd9e 100755
+--- a/scripts/lib/dispatch.sh
++++ b/scripts/lib/dispatch.sh
+@@ -91,6 +91,14 @@ get_agent_command() {
+             case "${OCTOPUS_GEMINI_SANDBOX:-headless}" in
+                 interactive|prompt-mode) gemini_flags="" ;;
+             esac
++            # Pin Gemini's workspace to the project root explicitly so writes
++            # outside Gemini's auto-detected cwd-basename dir are allowed.
++            # Without this, writes to $PROJECT_ROOT/... can be refused as
++            # "outside workspace" when Gemini's auto-detected workspace
++            # differs from PROJECT_ROOT (e.g. when invoked from a subdir).
++            if [[ -n "${PROJECT_ROOT:-}" && "$gemini_flags" == *"--approval-mode yolo"* ]]; then
++                gemini_flags+=" --include-directories ${PROJECT_ROOT}"
++            fi
+             echo "${gemini_env} ${gemini_exec} ${model} ${gemini_flags}"
+             ;;
+         codex-review) echo "codex exec --skip-git-repo-check review" ;; # Code review mode (no sandbox support)
+-- 
+2.53.0
+

@@ -1,0 +1,26 @@
+From 2e74c527b99350b71222b03081dc302642955ce0 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 12:23:30 -0700
+Subject: [PATCH 7/8] chore: rename patch series 'petrics' -> 'lestephen' in
+ code comment
+
+The patches are project-agnostic; petrics namespace was misleading.
+Patch series will be re-tagged from v9.38.0-petrics.* to v9.38.0-lestephen.*
+matching the existing lestephen-octo marketplace name.
+
+diff --git a/scripts/orchestrate.sh b/scripts/orchestrate.sh
+index 03d5fea..b5ae278 100755
+--- a/scripts/orchestrate.sh
++++ b/scripts/orchestrate.sh
+@@ -65,7 +65,7 @@ OCTOPUS_DEBUG="${OCTOPUS_DEBUG:-false}"
+ # Priority: OCTOPUS_PROJECT_DIR env var > $PWD > $OLDPWD (when $PWD is a
+ # plugin-cache install dir, which can happen if a caller cd'd into the
+ # plugin before invoking this script — historical pattern in the .claude
+-# command markdown files prior to v9.38.0-petrics.1).
++# command markdown files prior to v9.38.0-lestephen.1).
+ PROJECT_ROOT="${OCTOPUS_PROJECT_DIR:-${PWD}}"
+ case "$PROJECT_ROOT" in
+     */.claude/plugins/cache/*|*/.claude-octopus/plugin*)
+-- 
+2.53.0
+
