@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.18",
+  "version": "9.38.0-lestephen.19",
   "description": "Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",

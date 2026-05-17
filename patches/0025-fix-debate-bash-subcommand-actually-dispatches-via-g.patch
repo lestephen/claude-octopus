@@ -1,7 +1,7 @@
 From 79b3dd981cad981911bdc2db9ca89da6c9073b6b Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 08:13:08 -0700
-Subject: [PATCH 25/25] fix(debate): bash subcommand actually dispatches via
+Subject: [PATCH 25/26] fix(debate): bash subcommand actually dispatches via
  grapple_debate; removes dead submodule check
 
 bash orchestrate.sh debate "..." had been erroring with:

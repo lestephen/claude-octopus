@@ -50,7 +50,7 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 23 | `51d2756` | feat  | Provider enable/disable: persistent denylist in `providers.json.disabled[]` (user + project scope) + `OCTO_DISABLED_PROVIDERS` env + `/octo:provider` subcommand + doctor surface | **Yes — additive UX improvement; existing OCTO_ALLOWED_PROVIDERS preserved** |
 | 24 | `8975c3b` | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
 | 25 | `79b3dd9` | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
-| 26 | _pending_ | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
+| 26 | `2befccf` | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
 | 27 | _pending_ | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
@@ -1317,7 +1317,7 @@ The `/octo:debate` slash command path was already working (routes to skill-debat
 
 ## Patch 26 — `feat(critique): skill-critique + /octo:critique slash command for adversarial multi-LLM review of arbitrary scope`
 
-**Commit:** _pending_
+**Commit:** `2befccf`
 **Files:** `skills/skill-critique/SKILL.md` (new), `skills/skill-critique/agents/openai.yaml` (new), `.claude/commands/critique.md` (new), `.claude-plugin/plugin.json` (registrations), 6 manifest strings (51→52 commands, 58→59 skills)
 
 ### Background

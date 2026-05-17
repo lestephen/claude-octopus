@@ -1,6 +1,7 @@
 ---
 command: review
 description: Enhanced multi-LLM review with inline PR comments — escalation path beyond Claude-native /review
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch|pr|staged] [focus ...]'
 ---
 
 # /octo:review
@@ -8,6 +9,21 @@ description: Enhanced multi-LLM review with inline PR comments — escalation pa
 ## MANDATORY COMPLIANCE — DO NOT SKIP
 
 **When the user explicitly invokes `/octo:review`, you MUST execute the enhanced multi-provider review workflow below.** You are PROHIBITED from substituting Claude-native `/review`, direct reading, or a single-model review unless the user changes commands.
+
+## Argument flags (lestephen.19+)
+
+`/octo:review` accepts the same scope / execution flags as `/codex:review` to make scope explicit and skip the interactive Q&A when the caller already knows what they want. Raw arguments are available as `$ARGUMENTS`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--scope <mode>` | `auto` | One of: `auto`, `working-tree`, `branch`, `pr`, `staged`. `auto` picks based on git state (see Step 0.5). |
+| `--base <ref>` | inferred | Base ref for branch-scope diff. Defaults to `origin/main`, falling back to `main`, then merge-base of current branch. |
+| `--wait` | — | Force foreground execution. Skip the size-based "wait vs background" prompt. |
+| `--background` | — | Force background execution via Claude background Bash task. Skip the prompt. |
+
+The remaining argument words (e.g. `correctness security`) are interpreted as focus areas — equivalent to selecting them in the focus Q&A.
+
+If `--scope` is supplied, skip the "What should be reviewed?" question in Step 1. If `--wait` or `--background` is supplied, skip the size-based prompt in Step 0.5.
 
 ## Positioning
 
@@ -63,21 +79,89 @@ Providers:
 
 ---
 
+## Step 0: Parse flags from `$ARGUMENTS`
+
+Before asking any questions, parse the raw argument string for the flags documented above. Strip recognized flags out of `$ARGUMENTS`; remaining words become focus-area hints.
+
+```
+SCOPE=auto              # from --scope
+BASE=                   # from --base
+EXEC_MODE=              # "wait" | "background" | "" (ask)
+FOCUS_HINTS=()          # remaining words after flag stripping
+```
+
+`--scope` values:
+
+- `auto` — inspect git state (Step 0.5) and pick one of the others
+- `working-tree` — uncommitted changes (`git status --short`; `git diff` + `git diff --cached`)
+- `staged` — staged changes only (`git diff --cached`)
+- `branch` — committed range vs `--base` (default `origin/main` → fallback chain)
+- `pr` — current branch's open PR (`gh pr view --json number`)
+
+## Step 0.5: Estimate review size & decide execution mode
+
+If `EXEC_MODE` is empty (caller didn't pass `--wait` or `--background`), estimate the work size to recommend foreground vs. background. Run these in order:
+
+```bash
+# Common to all scopes
+git status --short --untracked-files=all
+```
+
+Per scope:
+
+- `working-tree`: also run `git diff --shortstat` and `git diff --shortstat --cached`
+- `staged`: `git diff --shortstat --cached`
+- `branch`: resolve `BASE` (try `origin/main` → `main` → `git merge-base @{u} HEAD`), then `git diff --shortstat <BASE>...HEAD`
+- `pr`: `gh pr diff $(gh pr view --json number --jq .number) --name-only` and `git diff --shortstat <BASE>...HEAD`
+- `auto`: pick `pr` if open PR exists; else `staged` if non-empty cached diff; else `working-tree`
+
+Treat untracked files or directories as reviewable work even when `git diff --shortstat` is empty. Only conclude "nothing to review" when the relevant scope is genuinely empty (status empty AND diff empty AND no untracked files).
+
+Recommend the execution mode:
+
+- **Foreground (wait)**: the review is clearly tiny — roughly 1-2 files total and no sign of broader directory-sized changes
+- **Background**: in every other case, including unclear size
+- **When in doubt, run the review** in the background rather than declaring there's nothing to review
+
+Then use `AskUserQuestion` exactly once to confirm — putting the recommended option first and suffixing its label with `(Recommended)`:
+
+```javascript
+AskUserQuestion({
+  questions: [{
+    question: "How should this review run?",
+    header: "Execution",
+    multiSelect: false,
+    options: [
+      // Recommended option first; example shown for "background" recommendation:
+      {label: "Run in background (Recommended)", description: "Dispatch as a Claude background Bash task. ~N files changed."},
+      {label: "Wait for foreground completion", description: "Run synchronously. You'll see the multi-LLM dispatch results inline."}
+    ]
+  }]
+})
+```
+
+Skip this Q&A if `EXEC_MODE` was already set by `--wait` / `--background`.
+
+If the size estimate shows zero work AND no untracked files AND no open PR, tell the user there's nothing to review and stop. Do not invent work to do.
+
 ## Step 1: Ask Clarifying Questions / Context Acquisition
 
 **Determine mode based on session autonomy:**
 
 If `AUTONOMY_MODE` env var is `autonomous`, or session is running headlessly, or `OCTOPUS_WORKFLOW_PHASE` is set (indicating a pipeline context like `/octo:develop` or `/octo:embrace`), skip Q&A and auto-infer with ALL focus areas:
-1. Run `git diff --cached` — if non-empty, `target=staged`
+1. If `SCOPE` was set by `--scope`, use it; else: run `git diff --cached` — if non-empty, `target=staged`
 2. Run `gh pr view --json number` — if open PR exists, set `target=<pr_number>`
 3. Otherwise `target=working-tree`
 4. Set `provenance=unknown`, `autonomy=autonomous`, `publish=ask`, `debate=auto`, `history=auto`, `focus=["correctness","security","architecture","tdd"]`
 
-**Otherwise (supervised mode), you MUST use AskUserQuestion to ask these questions:**
+**Otherwise (supervised mode), use AskUserQuestion to ask the remaining questions.**
+
+**Skip the "What should be reviewed?" question when `SCOPE` was set via `--scope` in Step 0** — use the resolved scope as `target` directly. Otherwise include the target question:
 
 ```javascript
 AskUserQuestion({
   questions: [
+    // ↓ Include this first question ONLY when SCOPE was not set via --scope:
     {
       question: "What should be reviewed?",
       header: "Target",
@@ -164,13 +248,16 @@ If the output is `plugin-root:missing`, stop and ask the user to run `/octo:setu
 
 ## Step 3: Execute Review Pipeline
 
-Run via Bash tool:
+Run via Bash tool. **Honor `EXEC_MODE`** from Step 0:
+
+- If `EXEC_MODE=wait` (or user chose foreground in Step 0.5): run synchronously (`run_in_background: false` — the default).
+- If `EXEC_MODE=background` (or user chose background in Step 0.5): dispatch as a Claude background Bash task (`run_in_background: true`). You'll be notified when it completes; in the meantime, do not poll — continue with other work the user gives you.
 
 ```bash
 ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh code-review '<profile-json>'
 ```
 
-Where `<profile-json>` is the JSON profile built in Step 2.
+Where `<profile-json>` is the JSON profile built in Step 2. The profile's `target` field reflects the resolved scope from Step 0 / Step 1.
 
 The pipeline runs 3 rounds (parallel fleet → verification → synthesis) and outputs findings. If a PR is open and publish is not "never", it offers to post inline comments.
 
