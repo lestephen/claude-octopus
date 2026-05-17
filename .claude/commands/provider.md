@@ -13,7 +13,7 @@ Manage the set of AI providers Claude Octopus is allowed to dispatch to. Useful 
 
 ## 🤖 INSTRUCTIONS FOR CLAUDE
 
-When the user invokes `/provider` (with no args), `/provider list`, or asks "what providers are enabled?", run:
+When the user invokes `/octo:provider` (with no args), `/octo:provider list`, or asks "what providers are enabled?", run:
 
 ```bash
 bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider list
@@ -24,23 +24,23 @@ Show the full output. The table includes per-provider status (`available` / `mis
 ### Subcommands
 
 ```
-/provider                                  → equivalent to /provider list
-/provider list                             → status table
-/provider disable <name> [--project]      → persistently disable
-/provider enable <name> [--project]       → re-enable
-/provider status <name>                   → detailed status for one provider
-/provider --help                          → usage
+/octo:provider                                  → equivalent to /octo:provider list
+/octo:provider list                             → status table
+/octo:provider disable <name> [--project]      → persistently disable
+/octo:provider enable <name> [--project]       → re-enable
+/octo:provider status <name>                   → detailed status for one provider
+/octo:provider --help                          → usage
 ```
 
-`--project` writes to `./.octopus/providers.json` (commits with the repo, applies only when working in that project). Default scope is `--user` which writes to `~/.claude-octopus/config/providers.json` (applies everywhere on your machine).
+`--project` writes to `./.octopus/octo:providers.json` (commits with the repo, applies only when working in that project). Default scope is `--user` which writes to `~/.claude-octopus/config/octo:providers.json` (applies everywhere on your machine).
 
 ### Precedence
 
 ```
 1. OCTO_ALLOWED_PROVIDERS env  (strict session allowlist — anything else treated as unavailable)
 2. OCTO_DISABLED_PROVIDERS env (session denylist)
-3. ./.octopus/providers.json   (project scope, .disabled[])
-4. ~/.claude-octopus/config/providers.json (user scope, .disabled[])
+3. ./.octopus/octo:providers.json   (project scope, .disabled[])
+4. ~/.claude-octopus/config/octo:providers.json (user scope, .disabled[])
 ```
 
 Any source that disables a provider wins; env overrides persistent config.
@@ -55,12 +55,12 @@ Any source that disables a provider wins; env overrides persistent config.
 
 **Disable Copilot persistently** (you've found it doesn't add value):
 ```
-/provider disable copilot
+/octo:provider disable copilot
 ```
 
 **Disable Qwen for one project only** (the client doesn't allow it):
 ```
-/provider disable qwen --project
+/octo:provider disable qwen --project
 ```
 
 **Disable Gemini just for this session** (it's having an outage):
@@ -72,11 +72,11 @@ export OCTO_DISABLED_PROVIDERS=gemini
 
 **Re-enable after a hiatus**:
 ```
-/provider enable copilot
+/octo:provider enable copilot
 ```
 
 ### Post-execution
 
-After any persistent change (`disable`/`enable`), run `/provider list` to confirm the new state and show the user where the change took effect.
+After any persistent change (`disable`/`enable`), run `/octo:provider list` to confirm the new state and show the user where the change took effect.
 
 If the user disables a provider that the current dispatch pipeline was about to call (e.g., during a `/octo:debate`), surface the change but note that the in-flight call will complete as scheduled. Future calls will respect the new state.

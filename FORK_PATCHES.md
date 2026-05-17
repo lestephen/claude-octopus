@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 23 commits on top of `upstream/main` (currently at
+This fork carries 24 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.15`.
+`v9.38.0-lestephen.16`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -47,7 +47,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 20 | `30297db` | fix   | Library skills: correct probe-single call signature (prompt is `$2` not `$4`) and output file pattern (`<agent>-<task_id>.md`) | Bundle with #19 — fixes the same code path |
 | 21 | `965b2d6` | feat  | Slash command shortcuts for new skills (`/defensibility`, `/argument-strength`); command count 48→50 across manifests | Bundle with #19 — surfaces the new skills as first-class commands |
 | 22 | `4bc0a7f` | fix   | Cross-provider safety for bare-provider routing in `resolve_octopus_model` — fixes #1 (codex routed to perplexity via `roles.researcher`) | **Yes — clear bug, completes the v9.17.1 patch** |
-| 23 | _pending_ | feat  | Provider enable/disable: persistent denylist in `providers.json.disabled[]` (user + project scope) + `OCTO_DISABLED_PROVIDERS` env + `/provider` subcommand + doctor surface | **Yes — additive UX improvement; existing OCTO_ALLOWED_PROVIDERS preserved** |
+| 23 | `51d2756` | feat  | Provider enable/disable: persistent denylist in `providers.json.disabled[]` (user + project scope) + `OCTO_DISABLED_PROVIDERS` env + `/octo:provider` subcommand + doctor surface | **Yes — additive UX improvement; existing OCTO_ALLOWED_PROVIDERS preserved** |
+| 24 | _pending_ | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1158,9 +1159,9 @@ Verified with three trace runs:
 
 ---
 
-## Patch 23 — `feat(provider): persistent enable/disable for providers with project + user scope, env override, doctor surface, /provider command`
+## Patch 23 — `feat(provider): persistent enable/disable for providers with project + user scope, env override, doctor surface, /octo:provider command`
 
-**Commit:** _pending_
+**Commit:** `51d2756`
 **Files:** `scripts/lib/provider-allowlist.sh` (+89 / -1), `scripts/lib/provider-config.sh` (new +148), `scripts/orchestrate.sh` (+72, new `provider` subcommand), `scripts/lib/doctor.sh` (+18), `.claude/commands/provider.md` (new), `.claude-plugin/plugin.json` (+1), `README.md` (+25), 5 user-facing manifest strings (50→51 commands)
 
 ### Background
@@ -1194,7 +1195,7 @@ Two scopes:
 **B. New `OCTO_DISABLED_PROVIDERS` env var:** space/comma-separated denylist for session-scoped exclusions (e.g., "Gemini is having an outage, skip it for this session").
 
 **C. Surfacing + UX:**
-- New `/provider` slash command with `list`, `disable`, `enable`, `status`, `--help` subcommands.
+- New `/octo:provider` slash command with `list`, `disable`, `enable`, `status`, `--help` subcommands.
 - `/octo:doctor --verbose` now shows one line per disabled provider with source ("env (OCTO_DISABLED_PROVIDERS)", "project (./.octopus/providers.json)", "user (...)").
 - README section explaining all three mechanisms and precedence.
 
@@ -1220,8 +1221,28 @@ Backward compatibility: `OCTO_ALLOWED_PROVIDERS` semantics unchanged — if set,
 Plausible upstream PR — the feature is additive, doesn't change defaults, and `OCTO_ALLOWED_PROVIDERS` semantics are preserved. The `.disabled[]` field in `providers.json` is a new key that doesn't conflict with existing keys. Worth a discussion-first PR with the maintainer to align on:
 
 - Whether `disabled[]` should be `providers_disabled[]` or namespaced differently.
-- Whether to add a `/octo:provider` command (alongside or instead of bare `/provider`).
+- Whether `/octo:provider` is the right namespace (matches `/octo:setup`, `/octo:doctor` etc. for plugin-management commands).
 - Whether to migrate `OCTO_ALLOWED_PROVIDERS` to a config-file representation alongside the env var.
+
+---
+
+## Patch 24 — `docs: use /octo:provider as canonical, matching /octo:setup and /octo:doctor convention`
+
+**Commit:** _pending_
+
+**Not for upstream.** Doc-only fix bundled with patch #23.
+
+Patch #23 introduced the new `provider` slash command but the docs in
+`.claude/commands/provider.md`, `README.md`, and `FORK_PATCHES.md`
+referred to it as bare `/provider`. The existing plugin-management
+slash commands (`/octo:setup`, `/octo:doctor`, etc.) consistently use
+the `/octo:` namespace prefix in their docs even though Claude Code
+auto-registers commands in both bare and namespaced forms. This patch
+updates all 20 doc references to use `/octo:provider` for consistency
+with that convention.
+
+No code change; bare `/provider` continues to work because Claude
+Code's plugin namespacing registers both forms automatically.
 
 ---
 
@@ -1242,7 +1263,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 23 patches as mbox
+The `patches/` directory in this fork contains all 24 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

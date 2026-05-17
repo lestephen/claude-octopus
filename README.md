@@ -383,16 +383,16 @@ A provider that isn't useful for your work (or one having an outage) can be disa
 
 ```bash
 # List status across all providers
-/provider list
+/octo:provider list
 
 # Persistently disable a provider (writes ~/.claude-octopus/config/providers.json)
-/provider disable copilot
+/octo:provider disable copilot
 
 # Project-scoped disable (writes ./.octopus/providers.json — commits with the repo)
-/provider disable qwen --project
+/octo:provider disable qwen --project
 
 # Re-enable
-/provider enable copilot
+/octo:provider enable copilot
 
 # Session-only override via env (doesn't touch config files)
 export OCTO_DISABLED_PROVIDERS=gemini      # denylist
