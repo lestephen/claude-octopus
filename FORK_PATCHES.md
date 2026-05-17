@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 31 commits on top of `upstream/main` (currently at
+This fork carries 32 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.23`.
+`v9.38.0-lestephen.24`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -56,6 +56,7 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 29 | `5c18769` | refactor | PR 2 architectural: C5 real-bash `lib-multi-dispatch.sh` helper + interface_version on lib-* skills; C1 consolidate profile loading into `lib/load-octo-profile.sh`; misc audit fixes (F5 jq hyphen keys, F8 status allowlist message, F9 doctor source-aware remediation, F13 recompute compute_status field, C3 status exit codes, C7 multi-arg disable, C8 critique verdict.json) | Plausible — architectural improvement worth maintainer discussion |
 | 30 | `86a3a9a` | feat+fix | PR 3 deferred + autonomous-mode: new `skill-autonomous-mode` + `/octo:autonomous` for self-paced session control with file-issue-on-blocker protocol; F4 model-resolver bare agent_type recursion; C6 `--resume` in lib-multi-dispatch; docs/UX (G4 canonical profile path, G5 cross-skill routing table, G6 argument-hint frontmatter); +10 fixes from self-critique dogfood (autonomous mode precedence vs other skills' halts, destructive-action exemption expansion, malformed-profile no-fallthrough, etc.). 3 deferred items filed as GH #8/#9/#10. F12 image attachment filed as #7. | Plausible — substantive new skill + several fixes |
 | 31 | `474afbc` | feat  | Spike: F12 + #11 unified — `--image <path>` primitive in `orchestrate.sh probe-single` + `lib-multi-dispatch.sh` (codex `-i` confirmed end-to-end, others degrade gracefully with explicit result-header warning); `skill-lib-multi-inspect-figure` bumped to interface_version 2 to use the new attachment path (closes GH #7); review profile gains optional `reference` field with mockup-context preamble auto-injected into all reviewer prompts when set + new `/octo:visual-review <ref>` shortcut (closes GH #11 cheapest leg — full Playwright/deltaE visual-diff specialist deferred to follow-up); plus dogfood-discovered `--min-output-size` flag for one-word vision answers | **Yes — additive plumbing + closes 2 GH issues** |
+| 32 | `25bf7c4` | fix   | Correct lestephen.23 vision matrix after user pushback — retest revealed claude `--print` and gemini headless both see images via path-reference in prompt body (path-mentioned absolute or `@file`). Drop the "you cannot see pixels" prompt prepend (which was actively misleading Sonnet/Gemini); replace with a universal "Attached images" block appended to the prompt body for ALL providers. codex `-i` splice stays as belt-and-suspenders. Updates the matrix in `skill-lib-multi-inspect-figure`, `/octo:visual-review` banner, and `review.sh` mockup-preamble. Commit message includes a candid process retrospective on how a single failed gemini test entrenched the wrong claim through .23. | **Yes — clear correction of wrong claim shipped one patch earlier** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
