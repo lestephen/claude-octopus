@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "nyldn plugins for Claude Code workflows.",
-    "version": "9.38.0-lestephen.20"
+    "version": "9.38.0-lestephen.21"
   },
   "plugins": [
     {
@@ -16,7 +16,7 @@
         "url": "https://github.com/nyldn/claude-octopus.git"
       },
       "description": "Multi-LLM orchestration for Claude Code with agent summaries, prompt-size preflight, research fanout, and Codex-compatible skills. 32 personas, 52 commands, 59 skills. Run /octo:setup.",
-      "version": "9.38.0-lestephen.20",
+      "version": "9.38.0-lestephen.21",
       "author": {
         "name": "nyldn",
         "url": "https://github.com/nyldn"

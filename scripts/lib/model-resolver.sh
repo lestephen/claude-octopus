@@ -185,7 +185,9 @@ resolve_octopus_model() {
 
             if [[ -n "$capability" && "$capability" != "$provider" ]]; then
                 # Support both short capability (spark) and full model aliases (spark_model)
-                resolved_model=$(echo "$config_data" | jq -r ".providers.${provider}.\"${capability}\" // .providers.${provider}.\"${capability}_model\" // empty" 2>/dev/null)
+                # lestephen.21 (F5): use --arg for hyphenated provider names (e.g. cursor-agent).
+                # jq treats `.providers.cursor-agent` as a subtraction operator, not a key access.
+                resolved_model=$(echo "$config_data" | jq -r --arg p "$provider" --arg c "$capability" '.providers[$p][$c] // .providers[$p][$c+"_model"] // empty' 2>/dev/null)
             fi
             if [[ -n "$resolved_model" && "$resolved_model" != "null" ]]; then
                 [[ -n "$_trace" ]] && echo "[model-trace] Tier 4 (capability map): $resolved_model ← SELECTED (cap: ${capability:-none})" >&2
@@ -210,7 +212,8 @@ resolve_octopus_model() {
 
         # 5. Global Defaults
         if [[ -z "$resolved_model" || "$resolved_model" == "null" ]]; then
-            resolved_model=$(echo "$config_data" | jq -r ".providers.${provider}.default // .providers.${provider}.model // empty" 2>/dev/null)
+            # lestephen.21 (F5): use --arg for hyphenated provider names
+            resolved_model=$(echo "$config_data" | jq -r --arg p "$provider" '.providers[$p].default // .providers[$p].model // empty' 2>/dev/null)
             if [[ -n "$resolved_model" && "$resolved_model" != "null" ]]; then
                 [[ -n "$_trace" ]] && echo "[model-trace] Tier 6 (config default): $resolved_model ← SELECTED" >&2
             else

@@ -2748,18 +2748,37 @@ EOF
                 ;;
             list|"")    provider_config_list ;;
             disable)
-                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider disable <name> [--project]" >&2; exit 2; }
-                provider_config_disable "${_prov_args[0]}" "$_prov_scope"
+                # lestephen.21 (C7): loop over all positional args so
+                # `provider disable codex gemini` disables both. Previously
+                # silently dropped everything after the first.
+                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider disable <name> [...more names] [--project]" >&2; exit 2; }
+                _disable_rc=0
+                for _p in "${_prov_args[@]}"; do
+                    provider_config_disable "$_p" "$_prov_scope" || _disable_rc=$?
+                done
+                exit $_disable_rc
                 ;;
             enable)
-                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider enable <name> [--project]" >&2; exit 2; }
-                provider_config_enable "${_prov_args[0]}" "$_prov_scope"
+                # lestephen.21 (C7): same multi-arg fix as disable.
+                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider enable <name> [...more names] [--project]" >&2; exit 2; }
+                _enable_rc=0
+                for _p in "${_prov_args[@]}"; do
+                    provider_config_enable "$_p" "$_prov_scope" || _enable_rc=$?
+                done
+                exit $_enable_rc
                 ;;
             status)
                 [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider status <name>" >&2; exit 2; }
                 _p="${_prov_args[0]}"
+                # lestephen.21 (F8): distinguish disabled vs blocked-by-allowlist
+                # vs allowed. Previously said "allowed" even when
+                # OCTO_ALLOWED_PROVIDERS excluded the provider, which sent
+                # users debugging credentials instead of policy.
                 if octo_provider_disabled "$_p"; then
                     echo "$_p: DISABLED (source: $(octo_provider_disabled_source "$_p"))"
+                elif [[ -n "${OCTO_ALLOWED_PROVIDERS:-}" ]] && ! octo_provider_allowed "$_p"; then
+                    echo "$_p: BLOCKED by OCTO_ALLOWED_PROVIDERS=$OCTO_ALLOWED_PROVIDERS"
+                    echo "  (provider is not on the session allowlist; unset OCTO_ALLOWED_PROVIDERS or add it to allow)"
                 else
                     echo "$_p: not disabled (allowed)"
                 fi

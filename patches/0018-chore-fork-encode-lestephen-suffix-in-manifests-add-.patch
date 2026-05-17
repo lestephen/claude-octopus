@@ -1,7 +1,7 @@
 From 706203c18e3ba5e2e0ff2fe5803242bbcf729145 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 22:06:05 -0700
-Subject: [PATCH 18/28] chore(fork): encode lestephen suffix in manifests, add
+Subject: [PATCH 18/29] chore(fork): encode lestephen suffix in manifests, add
  bump-fork.sh, surface in doctor
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

@@ -1,7 +1,10 @@
 ---
 name: skill-lib-multi-review-doc
 description: "Library: fan a document out to N providers with per-reviewer prompts, then synthesize — call this from other skills/plugins"
+interface_version: 2
 ---
+
+> **Interface version 2** (lestephen.21+) — STEP 2-4 dispatch is now done via `scripts/helpers/lib-multi-dispatch.sh` (real bash). Consumer skills should rely on that helper, not on the inline pseudocode that was here in v1. The `lib-multi-dispatch.sh` helper enforces the strong validation gate (Status: SUCCESS + Output content) and writes `dispatch.json` + `synthesis-input.md` for the caller. v1 callers that walked the pseudocode by hand still work but should migrate.
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
 > Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
@@ -92,71 +95,83 @@ If a reviewer's provider is unavailable, skip THAT reviewer and report which wer
 
 @skills/blocks/provider-check.md
 
-### STEP 2: Build per-reviewer dispatch commands
+### STEP 2: Dispatch via `scripts/helpers/lib-multi-dispatch.sh` (v2 path — recommended)
 
-For each reviewer in the caller's list whose `agent_type` is available:
+**lestephen.21:** The dispatch + validation gate is now a real bash helper. Skill prose pseudocode (the v1 path documented below) is preserved as a fallback but should not be used by new consumer skills.
 
-1. Generate a unique `task_id` (slug-safe, will appear in the output filename): `lib-review-$(date +%Y%m%d-%H%M%S)-<perspective_label_slug>`
-2. Construct the full prompt body: `<reviewer.prompt>\n\n---\n\nDocument under review (path: <doc_path>):\n\n<contents of doc_path>`
-3. Dispatch via `orchestrate.sh probe-single`. **Important call-signature notes (verified against `probe_single_agent` in `scripts/lib/workflows.sh`):**
-   - The PROMPT-the-model-actually-sees is argument `$2` (the "perspective" slot — name is historical; it is the prompt body after persona injection).
-   - Argument `$4` (`original_prompt`) is optional metadata for downstream synthesis context; the model does not receive it. Pass the document/topic summary here if you want; do not put the reviewer's instructions in `$4`.
-   - The output file is written to `${output_dir}/<agent_type>-<task_id>.md`.
+**Write the reviewers spec to a JSON file**, then call the helper:
 
 ```bash
 OUTPUT_DIR="${output_dir:-$HOME/.claude-octopus/results/lib-multi-review-doc/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUTPUT_DIR"
 
-# Per reviewer (run all in parallel using & + wait):
-"${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe-single \
-  "<reviewer.agent_type>" \
-  "<full_prompt_body>" \
-  "<task_id>" \
-  "review of <doc_path basename>" \
-  --output-dir "$OUTPUT_DIR" &
+# Build reviewers.json from caller's input (filter to available providers first):
+cat > "$OUTPUT_DIR/reviewers.json" <<EOF
+[
+  {"agent_type": "codex",  "perspective_label": "technical-rigor",     "prompt": "..."},
+  {"agent_type": "gemini", "perspective_label": "structural-clarity", "prompt": "..."}
+]
+EOF
+
+# Dispatch — single command, fan-out + validation + synthesis-input in one shot:
+bash "${HOME}/.claude-octopus/plugin/scripts/helpers/lib-multi-dispatch.sh" \
+    --doc-path     "$doc_path" \
+    --reviewers    "$OUTPUT_DIR/reviewers.json" \
+    --output-dir   "$OUTPUT_DIR" \
+    --min-reviewers 2 \
+    --task-prefix  "lib-review" \
+    > "$OUTPUT_DIR/dispatch.stdout" 2>&1
+DISPATCH_RC=$?
 ```
 
-After spawning all reviewers, `wait` for them to finish.
-
-### STEP 3: Render reviewer status table
-
-While reviewers run (or as they complete), surface progress to the user:
+The helper output (`dispatch.stdout`) contains structured key=value lines:
 
 ```
-🔴 technical-rigor       ⏳ running
-🟡 structural-clarity    ✅ done (12s)
+DISPATCH_OUTPUT_DIR=<dir>
+DISPATCH_TOTAL=<N>
+DISPATCH_SUCCESS=<K>
+DISPATCH_FAILED=<M>
+DISPATCH_VERDICT=ok | insufficient
+SYNTHESIS_INPUT=<dir>/synthesis-input.md
+DISPATCH_JSON=<dir>/dispatch.json
 ```
 
-### STEP 4: Validation gate (MANDATORY)
+Parse these to drive the synthesis step (STEP 5). The helper also writes:
 
-After `wait`, confirm each expected per-reviewer output file exists. File pattern is `<agent_type>-<task_id>.md` (set by `probe_single_agent` in `scripts/lib/workflows.sh:128`):
+- `<output-dir>/<agent>-<task_id>.md` per reviewer
+- `<output-dir>/dispatch.json` — structured summary of all dispatch outcomes
+- `<output-dir>/synthesis-input.md` — concatenated Output sections of successful reviewers, ready to feed into synthesis
+
+### STEP 3: (informational) Render reviewer status to the user
+
+The helper writes per-reviewer success/failure lines to stderr in real time. Parent skills can `tee` to surface progress to the user, or just wait for the helper to complete and report from `dispatch.json`.
+
+### STEP 4: Validation gate (handled by the helper)
+
+The helper enforces a **strong validation gate** (per audit issue #1):
+
+1. Each expected output file exists and is non-empty
+2. Each file's `## Status:` line is not `FAILED`
+3. Each file's `## Output` section body is ≥ 50 chars (not just code-fence-only or headers)
+
+If fewer than `--min-reviewers` pass: helper exits with code 4, writes `DISPATCH_VERDICT=insufficient`, and the caller MUST NOT proceed to synthesis with partial results. Surface the failure with a pointer to `dispatch.json` and `.dispatch-*.stdout` for the per-reviewer logs.
 
 ```bash
-FAIL=0
-declare -A TASK_BY_LABEL  # populated when dispatching, keyed by perspective_label
-for label in "${!TASK_BY_LABEL[@]}"; do
-  task_id="${TASK_BY_LABEL[$label]}"
-  agent_type="${AGENT_BY_LABEL[$label]}"
-  FILE="${OUTPUT_DIR}/${agent_type}-${task_id}.md"
-  if [[ ! -s "$FILE" ]]; then
-    echo "❌ VALIDATION FAILED: no output for reviewer '$label' (expected $FILE)"
-    FAIL=1
-  else
-    echo "✅ $label -> $FILE"
-  fi
-done
-[[ $FAIL -eq 1 ]] && {
-  echo "Multi-LLM dispatch did not produce expected files. Inspect ~/.claude-octopus/logs/."
-  echo "Do NOT fall back to single-model review — surface the failure to the caller."
-  exit 1
-}
+if [[ $DISPATCH_RC -ne 0 ]]; then
+    echo "❌ VALIDATION FAILED — see $OUTPUT_DIR/dispatch.json"
+    cat "$OUTPUT_DIR/dispatch.stdout"
+    exit $DISPATCH_RC
+fi
 ```
-
-If validation fails: report which reviewers failed, show relevant log paths, and return failure to the caller. DO NOT proceed to synthesis with partial results unless the caller explicitly opted in via a `min_reviewers` threshold.
 
 ### STEP 5: Synthesis
 
-Concatenate the per-reviewer outputs and apply the caller's `synthesis_prompt`. Synthesis runs on the host (Claude in Claude Code, Codex in Codex CLI), not as a fourth multi-provider call.
+The helper already wrote `synthesis-input.md` with the concatenated Output sections of successful reviewers. Read it and apply the caller's `synthesis_prompt`. Synthesis runs on the host (Claude in Claude Code, Codex in Codex CLI), not as a fourth multi-provider call.
+
+```bash
+SYNTHESIS_INPUT=$(grep '^SYNTHESIS_INPUT=' "$OUTPUT_DIR/dispatch.stdout" | cut -d= -f2-)
+# Read $SYNTHESIS_INPUT, apply the synthesis_prompt, write to $OUTPUT_DIR/synthesis.md
+```
 
 Write the synthesis to `$OUTPUT_DIR/synthesis.md` with this structure:
 

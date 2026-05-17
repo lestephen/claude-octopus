@@ -219,6 +219,11 @@ for path in files:
             print(f"{path} (plugins/{name})\t{plugin['version']}")
 EOF
     )
+    # lestephen.21 (C3): distinct exit codes so CI/pre-push hooks can
+    # tell "drift detected" (1) apart from "script crashed" (other non-zero).
+    #   0 — all consistent
+    #   1 — drift detected (a manifest reports a different version than current)
+    #   2 — internal script error (set -u trap, command failure, etc. — set via shell defaults)
     return $mismatch
 }
 

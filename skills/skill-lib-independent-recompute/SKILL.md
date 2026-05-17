@@ -1,7 +1,10 @@
 ---
 name: skill-lib-independent-recompute
 description: "Library: ask one or more providers to recompute a quantitative claim from source data, then report deltas — call this from other skills/plugins"
+interface_version: 1
 ---
+
+> **Interface version 1** — Consumer skills should pin this version. The audit (F13) flagged that the synthesis aggregator expects a `compute_status` field that provider prompts don't request; that will be addressed in a v2 of this interface with a structured JSON output requirement.
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
 > Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
@@ -120,6 +123,22 @@ Report in this format:
 
 ## Caveats
 <anything you had to assume or anything the source did not let you verify>
+
+## Machine-readable summary
+<!-- lestephen.21 (F13): The aggregator (STEP 6) parses this block.
+     MUST be a single JSON object, MUST be the last block in your output.
+     compute_status: "ok" | "source_unavailable" | "ambiguous_methodology" | "refused"
+-->
+```json
+{
+  "compute_status": "ok",
+  "computed_value": "<numeric>",
+  "unit": "<e.g. ppm, %, hours>",
+  "delta_from_claim": "<signed numeric>",
+  "within_tolerance": true,
+  "methodology_summary": "<one sentence>"
+}
+```
 ```
 
 ### STEP 4: Dispatch per provider in parallel

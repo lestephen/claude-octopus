@@ -227,6 +227,28 @@ After copying, the original `$BUNDLE_PATH` temp file can be unlinked:
 rm -f "$BUNDLE_PATH"
 ```
 
+**lestephen.21 (C8):** Also write a machine-readable `verdict.json` alongside the prose report so agentic consumers (e.g., `/octo:embrace` flows that might branch on critique outcomes) don't have to regex-parse the prose:
+
+```bash
+cat > "$OUTPUT_DIR/verdict.json" <<EOF
+{
+  "verdict": "$VERDICT",
+  "top_actions": [
+    "<first must-change>",
+    "<second>",
+    "<third>"
+  ],
+  "synthesis_path": "$OUTPUT_DIR/synthesis.md",
+  "report_path": "$OUTPUT_DIR/critique-report.md",
+  "scope_type": "$SCOPE_TYPE",
+  "providers_run": ["codex", "gemini", "claude"],
+  "timestamp_utc": "$(date -u +%FT%TZ)"
+}
+EOF
+```
+
+`$VERDICT` is one of: `STRONG` | `DEFENSIBLE WITH FIXES` | `LOAD-BEARING WEAKNESSES` | `NEEDS REDESIGN`.
+
 ## Failure modes
 
 | Failure | Skill behavior |

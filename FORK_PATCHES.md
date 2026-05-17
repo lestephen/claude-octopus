@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 28 commits on top of `upstream/main` (currently at
+This fork carries 29 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.20`.
+`v9.38.0-lestephen.21`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -52,7 +52,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 25 | `79b3dd9` | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
 | 26 | `2befccf` | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
 | 27 | `229646a` | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
-| 28 | _pending_ | fix   | PR 1 ship-blockers from dogfood audit: F1 dispatch-guard (provider disable now enforced), F2/F3 debate prompt corruption + mode validation, F6/F7/F10/F11 bump-fork + provider-config atomicity / flock / name validation, G2 critique bundle → temp file, G3 defensibility-pass hardening | **Yes — bundle of clear bug fixes** |
+| 28 | `ca0d2bc` | fix   | PR 1 ship-blockers from dogfood audit: F1 dispatch-guard (provider disable now enforced), F2/F3 debate prompt corruption + mode validation, F6/F7/F10/F11 bump-fork + provider-config atomicity / flock / name validation, G2 critique bundle → temp file, G3 defensibility-pass hardening | **Yes — bundle of clear bug fixes** |
+| 29 | _pending_ | refactor | PR 2 architectural: C5 real-bash `lib-multi-dispatch.sh` helper + interface_version on lib-* skills; C1 consolidate profile loading into `lib/load-octo-profile.sh`; misc audit fixes (F5 jq hyphen keys, F8 status allowlist message, F9 doctor source-aware remediation, F13 recompute compute_status field, C3 status exit codes, C7 multi-arg disable, C8 critique verdict.json) | Plausible — architectural improvement worth maintainer discussion |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1446,6 +1447,67 @@ Strong upstream PR candidate. All five fixes are clear bugs in the new code path
 
 ---
 
+## Patch 29 — `refactor: PR 2 architectural improvements (real-bash dispatch helper, consolidated profile loader, misc audit fixes)`
+
+**Commit:** _pending_
+
+PR 2 from the dogfood-audit recommendations. Architectural improvements that pay for themselves: testable real-bash dispatch (instead of skill-prose pseudocode), single profile loader (was three drifting implementations), and the remaining MEDIUM/LOW audit findings.
+
+### C5: `scripts/helpers/lib-multi-dispatch.sh` — real bash dispatcher
+
+Replaces the pseudocode-in-skill-prose pattern that the `skill-lib-*` skills previously used. Takes `--doc-path`, `--reviewers <json-file>`, `--output-dir`, `--min-reviewers`; dispatches parallel `probe-single` calls; enforces a **strong validation gate** (file exists + non-empty + `## Status: SUCCESS` + `## Output` body ≥ 50 chars — closes audit issue #1 about the file-size-only gate); writes `dispatch.json` summary + `synthesis-input.md` for consumer skills.
+
+Distinct exit codes:
+- `0` — success
+- `2` — usage / preflight failure
+- `3` — dispatch infrastructure (orchestrate.sh missing)
+- `4` — partial / insufficient reviewers passed validation
+
+Consumer skills (`skill-lib-multi-review-doc`) updated to call this helper; pseudocode v1 path preserved for older callers but marked obsolete.
+
+### C2: `interface_version` frontmatter on all `skill-lib-*` skills
+
+Bumped to `interface_version: 2` for `skill-lib-multi-review-doc` (matches the helper-driven path). `skill-lib-multi-inspect-figure` and `skill-lib-independent-recompute` pinned at `interface_version: 1` with notes describing what would bump them. Consumer skills should pin to a major version so silent interface drift breaks loudly.
+
+### C1: `scripts/lib/load-octo-profile.sh` — single profile loader
+
+Consolidates three previously-independent profile-loading implementations into one. Exports `OCTO_PROFILE_PATH` and `OCTO_PROFILE_STATUS` (`loaded` | `template` | `missing` | `malformed`). `octo_profile_status_line` renders a single-line status for skill prose / doctor output.
+
+Search order (first match wins):
+
+1. `$OCTOPUS_KW_PROFILE`
+2. `./.octopus/profile.yaml`
+3. `$HOME/.config/octopus/profile.yaml`
+4. `$HOME/.claude-octopus/config/profile.yaml`
+5. plugin-installed `eki-kw/profiles/default.yaml`
+6. any installed `profiles/default.yaml`
+
+### Misc audit fixes batched
+
+- **F5**: jq lookups with hyphenated provider names (e.g. `cursor-agent`) now use `--arg` instead of `${provider}` interpolation. Previously `.providers.cursor-agent` parsed as subtraction, silently dropping the config.
+- **F8**: `/octo:provider status` now distinguishes `BLOCKED by OCTO_ALLOWED_PROVIDERS` from `not disabled (allowed)`. Was reporting "allowed" when an env allowlist excluded the provider.
+- **F9**: `/octo:doctor` per-disabled-provider hint now branches on source — env disables suggest unsetting the env var; project disables append `--project`; user disables get the default `provider enable` form.
+- **F13**: `skill-lib-independent-recompute` provider prompt now requires a final JSON `Machine-readable summary` block with `compute_status` and `computed_value` fields. The aggregator was expecting this field but the prompt never asked for it.
+- **C3**: `bump-fork.sh status` exit-code semantics documented — `0` consistent, `1` drift detected, `2+` script error. CI / pre-push hooks can now distinguish.
+- **C7**: `provider disable codex gemini` now actually disables both. Previously silently dropped everything after the first arg.
+- **C8**: `/octo:critique` now writes a machine-readable `verdict.json` alongside the prose `critique-report.md`. Agentic consumers can branch on outcome without regex-parsing prose.
+
+### What this patch does NOT close
+
+Items deferred to follow-up issues / future patches:
+
+- **C4** (doctor + provider list format inconsistency) — both still render their own way; alignment is a UX-only nice-to-have
+- **C6** (no resume after partial reviewer failure) — the helper has the substrate (`dispatch.json`) but no `--resume` flag yet
+- **F4** (model-resolver bare-value still treats some strings as literal model names) — needs deeper refactor of `resolve_provider_to_agent`
+- **F12** (figure inspection sends text path instead of image bytes) — needs provider-specific multimodal payload work; bigger than a patch
+- **G4 / G5 / G6 / G7** (Gemini's UX/naming nits) — bikeshed; settle once the ship-blockers and architectural items are stable
+
+### Upstream PR strategy
+
+Plausible upstream PR. The real-bash dispatch helper is genuinely useful for any skill that wants multi-LLM fan-out and not all consumers will be in the lestephen fork. The profile loader is similar — third-party plugins benefit. The misc fixes are clear bugs in PR-1 code or in v9.17.1 / v9.38.0 / lestephen.15 code. Worth a discussion-first PR for the architectural items (C5 + C2 + C1); misc fixes can land as a separate small PR.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1463,7 +1525,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 28 patches as mbox
+The `patches/` directory in this fork contains all 29 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

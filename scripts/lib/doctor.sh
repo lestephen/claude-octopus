@@ -285,13 +285,27 @@ doctor_check_providers() {
             local _disabled
             _disabled="$(octo_disabled_set 2>/dev/null)"
             if [[ -n "$_disabled" ]]; then
-                local entry _src
+                local entry _src _hint
                 while IFS= read -r entry; do
                     [[ -z "$entry" ]] && continue
                     _src="$(octo_provider_disabled_source "$entry" 2>/dev/null)"
+                    # lestephen.21 (F9): branch remediation on source.
+                    # Default user-scope `provider enable` only fixes user-config
+                    # disables. For env disables, suggest unsetting the env;
+                    # for project disables, suggest --project flag.
+                    case "$_src" in
+                        *"env (OCTO_DISABLED_PROVIDERS)"*)
+                            _hint="Re-enable for this session: unset OCTO_DISABLED_PROVIDERS (or remove this provider from it)" ;;
+                        *"project ("*)
+                            _hint="Re-enable for this project: scripts/orchestrate.sh provider enable $entry --project" ;;
+                        *"user ("*)
+                            _hint="Re-enable: scripts/orchestrate.sh provider enable $entry" ;;
+                        *)
+                            _hint="Re-enable: scripts/orchestrate.sh provider enable $entry  (source unknown — investigate)" ;;
+                    esac
                     doctor_add "provider-disabled-${entry}" "providers" "pass" \
                         "Provider explicitly disabled: $entry" \
-                        "Source: ${_src:-unknown}. Re-enable: scripts/orchestrate.sh provider enable $entry"
+                        "Source: ${_src:-unknown}. ${_hint}"
                 done <<< "$_disabled"
             fi
         fi

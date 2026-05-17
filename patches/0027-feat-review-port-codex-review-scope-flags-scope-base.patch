@@ -1,7 +1,7 @@
 From 229646a5f57a3c6d5496640f442900899e74381c Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 08:25:19 -0700
-Subject: [PATCH 27/28] feat(review): port /codex:review scope flags (--scope,
+Subject: [PATCH 27/29] feat(review): port /codex:review scope flags (--scope,
  --base, --wait, --background) with size sniffing
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
