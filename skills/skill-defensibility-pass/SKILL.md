@@ -90,10 +90,18 @@ echo "$(octo_profile_status_line)"
 ```
 
 `$OCTO_PROFILE_STATUS` is one of:
-- `loaded` — profile found and parses as valid YAML, no placeholders detected
+- `loaded` — profile found, parses as valid YAML, has all required schema keys (`audiences` non-empty object, `banned_terms` array, `internal_codenames` array), no placeholders
+- `unvalidated` — profile found and parses, but no validator was available to confirm the schema (neither `python3+yaml` nor `yq` is installed). Treat with caution; install a validator to get strict checking.
 - `template` — profile found but contains `<PLACEHOLDER` strings (user hasn't filled it in)
-- `malformed` — profile found but doesn't parse
+- `malformed` — profile found but doesn't parse as YAML
+- `incomplete` — profile parses but is missing required keys (lestephen.31, closes GH #4). `$OCTO_PROFILE_MISSING_KEYS` lists the missing keys (e.g. `audiences,banned_terms`). The loader STOPS at this profile rather than falling through, same rationale as malformed.
 - `missing` — no profile found in any search path
+
+**Return code policy (lestephen.31):**
+- `rc=0` for `loaded`, `unvalidated`, `template`, `missing` (the loader was able to do its job; callers inspect `$OCTO_PROFILE_STATUS` to decide whether to halt)
+- `rc=1` for `malformed`, `incomplete` (the file is broken in a way callers should always halt on)
+
+This preserves backward compatibility for scripts that ran under `set -e` and treated "no profile yet" as a normal state.
 
 Search order (first valid match wins, defined in the helper):
 
