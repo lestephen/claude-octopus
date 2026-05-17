@@ -62,6 +62,15 @@ OUTPUT_DIR=""
 MIN_REVIEWERS=2
 TASK_PREFIX="lib-dispatch"
 RESUME=false   # lestephen.22 (C6): --resume picks up where prior run left off
+# lestephen.23: --image <path> (repeatable) — image attachments for each
+# reviewer. Validated upfront; forwarded to every per-reviewer probe-single
+# invocation. Vision-capable providers (codex) get -i flags; others degrade
+# gracefully (see workflows.sh::probe_single_agent).
+IMAGES=()
+# lestephen.23 (dogfood find): --min-output-size N — minimum Output-section
+# body bytes for a reviewer to count as success. Default 50 (prose reviews).
+# Lower (e.g., 1) for visual inspection where "Green" is a valid answer.
+MIN_OUTPUT_SIZE=50
 
 usage() {
     sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -77,6 +86,19 @@ while [[ $# -gt 0 ]]; do
         --min-reviewers) MIN_REVIEWERS="$2"; shift 2 ;;
         --task-prefix)   TASK_PREFIX="$2"; shift 2 ;;
         --resume)        RESUME=true; shift ;;
+        --image)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --image requires a path argument" >&2; exit 2
+            fi
+            if [[ ! -f "$2" ]]; then
+                echo "ERROR: --image is not a file: $2" >&2; exit 2
+            fi
+            IMAGES+=("$2"); shift 2 ;;
+        --min-output-size)
+            if [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: --min-output-size requires a non-negative integer" >&2; exit 2
+            fi
+            MIN_OUTPUT_SIZE="$2"; shift 2 ;;
         -h|--help)       usage 0 ;;
         *)               echo "ERROR: unknown arg '$1'" >&2; usage 2 ;;
     esac
@@ -179,11 +201,22 @@ ${DOC_CONTENT}"
 
     echo "Dispatching ${agent} as ${label} (task=${task_id})..." >&2
 
+    # lestephen.23: build per-call --image args (repeatable) for vision-capable
+    # providers. Text-only providers will warn + degrade in probe_single_agent.
+    image_args=()
+    if [[ ${#IMAGES[@]} -gt 0 ]]; then
+        for _img in "${IMAGES[@]}"; do
+            image_args+=(--image "$_img")
+        done
+    fi
+
     # Per lestephen.12: prompt body goes in $2 (perspective slot), metadata in $4
+    # Empty-array-safe expansion under set -u: ${arr[@]+"${arr[@]}"}
     timeout 600 bash "$ORCHESTRATE" probe-single \
         "$agent" "$full_prompt" "$task_id" \
         "lib-multi-dispatch: ${label} on ${DOC_PATH}" \
         --output-dir "$OUTPUT_DIR" \
+        ${image_args[@]+"${image_args[@]}"} \
         > "$OUTPUT_DIR/.dispatch-${i}.stdout" 2>&1 &
     pid=$!
 
@@ -227,8 +260,8 @@ for i in "${!TASK_LABELS[@]}"; do
 
         if [[ "$status_line" == *"FAILED"* ]]; then
             reason="provider Status: FAILED"
-        elif [[ "$output_size" -lt 50 ]]; then
-            reason="provider output body < 50 chars (likely empty or just code-fence)"
+        elif [[ "$output_size" -lt "$MIN_OUTPUT_SIZE" ]]; then
+            reason="provider output body < ${MIN_OUTPUT_SIZE} chars (likely empty or just code-fence; tune via --min-output-size)"
         else
             outcome="success"
         fi

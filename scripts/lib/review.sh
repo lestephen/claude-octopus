@@ -326,7 +326,7 @@ review_run() {
     local profile_json="${1:-"{}"}"
 
     # Parse profile fields (with defaults)
-    local target focus provenance autonomy publish debate history
+    local target focus provenance autonomy publish debate history reference
     target=$(echo "$profile_json"     | jq -r '.target     // "staged"')
     focus=$(echo "$profile_json"      | jq -r '.focus      // ["correctness","security","architecture","tdd"]  | join(",")')
     provenance=$(echo "$profile_json" | jq -r '.provenance // "unknown"')
@@ -334,9 +334,22 @@ review_run() {
     publish=$(echo "$profile_json"    | jq -r '.publish    // "ask"')
     debate=$(echo "$profile_json"     | jq -r '.debate     // "auto"')
     history=$(echo "$profile_json"    | jq -r '.history    // "auto"')
+    # lestephen.23: optional `reference` field — a path to the source-of-truth
+    # artifact (mockup PNG, screenshot, design spec PDF). When set, the
+    # mockup-context preamble is prepended to every reviewer prompt so reviewers
+    # are explicitly forced to engage with the artifact rather than only the
+    # code-internal consistency. Closes the cheapest leg of GH #11. Full pixel-
+    # attachment via --image plumbing into spawn_agent is a follow-up.
+    reference=$(echo "$profile_json"  | jq -r '.reference  // ""')
     if [[ "$target" == "fresh" ]]; then
         target="working-tree"
         history="fresh"
+    fi
+
+    # Validate reference path if set — surface broken paths early
+    if [[ -n "$reference" && ! -f "$reference" ]]; then
+        log "WARN" "review_run: reference path does not exist: $reference (skipping preamble)"
+        reference=""
     fi
 
     # v9.0: Provider status tracking for post-run report card
@@ -483,6 +496,47 @@ review_run() {
         octo_proof_event "$proof_dir" "provider_fleet" "$(printf '%s\n' "$fleet" | jq -R -s 'split("\n")[:-1]')"
     fi
 
+    # lestephen.23: mockup-context preamble (cheapest leg of GH #11).
+    # When the profile sets `reference`, force reviewers to ground the diff
+    # against the source-of-truth artifact (mockup, screenshot, spec PDF).
+    # This is a text-only preamble — the headless review fleet still cannot
+    # see image pixels (deferred follow-up). Even text-only context forces the
+    # reviewer to flag "this code claims X but I cannot verify against the
+    # artifact" rather than silently rubber-stamping code-internal consistency.
+    local reference_preamble=""
+    if [[ -n "$reference" ]]; then
+        local _ref_basename
+        _ref_basename=$(basename "$reference")
+        local _ref_size
+        _ref_size=$(stat -c%s "$reference" 2>/dev/null || stat -f%z "$reference" 2>/dev/null || echo "unknown")
+        local _ref_kind="artifact"
+        case "$reference" in
+            *.png|*.jpg|*.jpeg|*.webp|*.gif|*.svg) _ref_kind="image mockup" ;;
+            *.pdf)                                  _ref_kind="PDF spec" ;;
+            *.md|*.txt|*.rst)                       _ref_kind="text spec" ;;
+        esac
+        reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.23):
+The reference ${_ref_kind} for this work is: ${reference}
+  (basename: ${_ref_basename}, size: ${_ref_size} bytes)
+
+REQUIRED BEHAVIOR — apply BEFORE evaluating code-internal consistency:
+1. Acknowledge whether you can actually inspect this reference. The headless
+   review fleet typically CANNOT see image pixels — say so explicitly if true.
+2. For visual-fidelity claims (color tokens, layout constants, typography
+   weights, spacing, iconography): if you cannot inspect pixels, flag any
+   value in the diff that LOOKS like a mockup-derived constant
+   (color hex, magic number, asset path) with severity 'normal' and
+   category 'visual-unverified' — note that pixel-grounding is required
+   before merging.
+3. For PDF/text-spec references: read the spec if accessible; otherwise flag
+   claims that depend on spec values as 'spec-unverified'.
+4. Do NOT silently rubber-stamp code-internal consistency
+   (e.g. \"canvas token matches consumers\") as evidence of ground-truth
+   fidelity — those are different properties.
+
+"
+    fi
+
     local agent_prompt_base
     agent_prompt_base="You are a code reviewer. Review the following diff and return ONLY a JSON object with a 'findings' array.
 
@@ -493,7 +547,7 @@ Severity guide:
 - nit: minor issue, not blocking (yellow)
 - pre-existing: bug not introduced by this PR (purple)
 
-${review_context}
+${reference_preamble}${review_context}
 ${review_history_context}
 ${graphify_context}
 

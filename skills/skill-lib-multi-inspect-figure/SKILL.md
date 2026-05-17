@@ -1,10 +1,21 @@
 ---
 name: skill-lib-multi-inspect-figure
 description: "Library: dispatch a rendered figure to multiple vision-capable providers with a rules prompt — call this from other skills/plugins"
-interface_version: 1
+interface_version: 2
 ---
 
-> **Interface version 1** — Consumer skills should pin this version. The image-attachment path is known-incomplete: providers receive the image PATH as text, not pixels. Tracking: GH #7. Until v2 lands with provider-specific attachment passthrough, vision providers infer from filename rather than actual visual content — degraded recall. Consumers should warn users about this until the issue is closed.
+> **Interface version 2** (lestephen.23) — When `--image <path>` is supplied, the library forwards it to `lib-multi-dispatch.sh --image`, which splices the appropriate per-provider image flag into the dispatched subprocess command. Callers from interface_version 1 (which passed the image path as text only) should re-pin to v2 and pass real paths.
+>
+> ⚠️ **Model vision vs. headless-CLI attachment — they are NOT the same thing.** Gemini Pro/Flash, Claude Sonnet/Opus, and GPT-vision all have full pixel-vision capability *at the model level*. The dispatch-path limitation below is about whether the **subprocess CLI** we shell out to has a documented mechanism to attach image bytes from the command line, not about whether the model can see images:
+>
+> | Provider | Model has vision? | Headless CLI dispatch attaches pixels? | Notes |
+> |---|---|---|---|
+> | `codex` family | Yes (GPT-vision) | ✅ Yes — `-i <file>` confirmed end-to-end | Closes GH #7 |
+> | `claude` (`--print` headless) | Yes (Sonnet/Opus vision) | ❌ No — `--print` has no `--image` flag | Vision in Claude reaches the model via host conversation context (Read tool, drag-drop). For subprocess dispatch, use the host Claude or the Anthropic API directly. |
+> | `gemini`/`qwen`/`cursor-agent` headless | Yes (Gemini Pro Vision) | ❌ No — `@file` + `--include-directories` returned 400 in spike testing | Interactive Gemini (paste image) works. Headless attachment may land in a future SDK update. |
+> | `perplexity`/`ollama`/`copilot`/`opencode`/`openrouter` | Varies by routed model | ❌ No documented headless image flag | Some can route to vision models via API directly; not through our subprocess CLI path. |
+>
+> For text-degraded providers, the prompt body is prepended with an explicit "you cannot see pixels in this dispatch" warning so the model self-limits to structural critique rather than hallucinating pixel observations.
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
 > Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
@@ -39,7 +50,7 @@ This exists because single vision models miss different categories of issues in 
 | `output_dir` (optional) | Where to write per-provider + synthesis files | default: `~/.claude-octopus/results/lib-inspect-figure/<timestamp>/` |
 | `context_doc` (optional) | Path to a doc that gives the figure context (e.g., the report it appears in) — useful for "does this figure support the surrounding claim" checks | |
 
-Vision-capable providers (as of v9.38.0): `claude`, `gemini`, `copilot` (vision-routed models only). `codex`/`opencode`/`qwen` are text-only; this skill skips them with a note.
+**Headless image-attachment via this dispatch path** (lestephen.23): only **`codex`** is confirmed (`-i` flag end-to-end). All other providers — including Claude and Gemini, whose *models* fully support vision — degrade text-only because their **headless CLI** does not expose a pixel-attachment flag. See the matrix in the version banner above for the model-vs-CLI distinction.
 
 ## ⚠️ MANDATORY: Visual Indicators Protocol
 
@@ -48,15 +59,15 @@ Vision-capable providers (as of v9.38.0): `claude`, `gemini`, `copilot` (vision-
 Then output the provider banner:
 
 ```
-🛠️ Library Phase: Multi-LLM figure inspection
+🛠️ Library Phase: Multi-LLM figure inspection (interface_version 2)
 
-Vision providers:
-🔵 Claude Vision - Visual lint
-🟡 Gemini Vision - Visual lint
-🔴 Codex - (text-only, skipped)
+Pixel attachment status (NOT model-level vision — see SKILL.md matrix):
+🔴 Codex CLI — pixel attachment ✅ (-i flag, confirmed)
+🔵 Claude --print — pixel attachment ❌ (subprocess CLI lacks --image; model itself does have vision)
+🟡 Gemini headless — pixel attachment ❌ (CLI lacks --image; model itself does have vision)
 ```
 
-Mark unavailable or non-vision providers explicitly. Continue with whichever vision providers are available.
+Mark each provider's *dispatch-path* status explicitly. Text-degraded providers still produce useful structural critique (their prompt is prepended with an explicit "you cannot see pixels" warning so they self-limit). Be clear with the caller: a "text-degraded gemini didn't find issues" is NOT evidence the figure is fine.
 
 ## ⚠️ MANDATORY COMPLIANCE — DO NOT SKIP
 
@@ -75,7 +86,7 @@ If zero vision providers are available, refuse: print the failure and exit non-z
 
 @skills/blocks/provider-check.md
 
-Then filter to vision-capable providers only. Treat `codex`, `qwen`, `opencode` as text-only by default (override at caller's risk via the `providers` input).
+Then filter to vision-capable providers. **Under interface_version 2 (lestephen.23) the vision-capability table inverts**: `codex` is the *only* confirmed-vision headless provider (via `-i` flag and `lib-multi-dispatch.sh --image`). Treat `gemini`, `qwen`, `cursor-agent`, `copilot`, `perplexity`, `ollama`, `opencode`, `openrouter` and headless `claude` (`--print`) as **text-degraded** — they accept the dispatch but the model receives only the filename (the prompt is prepended with an explicit "you cannot see pixels" warning, so they won't hallucinate). Always include codex when available; include text-degraded providers only when the rules are dominated by structural critique (axis labels described in caption, etc.) rather than pixel inspection.
 
 ### STEP 2: Validate inputs
 
@@ -88,17 +99,22 @@ case "$image_path" in
 esac
 ```
 
-### STEP 3: Dispatch per provider in parallel
+### STEP 3: Dispatch via lib-multi-dispatch.sh (interface_version 2)
 
-For each available vision provider, dispatch a probe-single inspection. The provider's prompt is the caller's `rules` plus a directive to attach the image:
+Use the shared dispatcher with `--image $image_path` so vision-capable providers receive actual image bytes via per-provider attachment flags. Build a reviewers JSON file with one entry per available provider, then call `lib-multi-dispatch.sh`:
 
 ```bash
 OUTPUT_DIR="${output_dir:-$HOME/.claude-octopus/results/lib-inspect-figure/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUTPUT_DIR"
 
 INSPECTION_PROMPT=$(cat <<EOF
-You are visually inspecting a rendered figure. Apply the rules below and report
-every issue you observe. Format each issue as:
+You are visually inspecting a rendered figure. The image is attached via the
+provider's image-attachment mechanism — examine the pixels, do not infer
+content from filenames. If you see a "Images requested but ... lacks headless
+image attachment" line in your dispatch context, say so explicitly and limit
+your report to structural critique from the rules text only.
+
+Apply the rules below and report every issue you observe. Format each issue as:
 
 ISSUE <n>: <one-line description>
   Location: <pixel region or chart element>
@@ -110,23 +126,44 @@ If you see no issues for a rule, say: NO ISSUES under rule: <rule>
 Rules:
 $rules
 
-Image path: $image_path
+Reference: $image_path (also passed via --image attachment when supported)
 EOF
 )
 
-# Important: probe-single's $2 (the "perspective" arg) IS the prompt the model
-# receives. $4 (original_prompt) is metadata only. File pattern written by
-# probe_single_agent: <agent_type>-<task_id>.md.
-TASK_ID="lib-inspect-$(date +%s)-<provider>"
-"${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe-single \
-  "<provider>" \
-  "$INSPECTION_PROMPT" \
-  "$TASK_ID" \
-  "figure inspection: $(basename "$image_path")" \
-  --output-dir "$OUTPUT_DIR" &
+# Build reviewers JSON — one entry per vision-routed provider available.
+# providers[] from caller defaults to the lestephen.23 vision-capable set.
+REVIEWERS_JSON="$OUTPUT_DIR/reviewers.json"
+jq -n --arg p "$INSPECTION_PROMPT" '
+  [ {agent_type:"codex",  perspective_label:"vision-codex",  prompt:$p} ]
+' > "$REVIEWERS_JSON"
+
+# The image path goes into a tiny doc-bundle so lib-multi-dispatch's
+# --doc-path preflight (-f, -s) is satisfied. The actual image bytes
+# travel via --image, not via doc-path content.
+DOC_BUNDLE="$OUTPUT_DIR/image-context.md"
+{
+  echo "# Image inspection context"
+  echo ""
+  echo "Image path: $image_path"
+  echo "Image size: $(stat -c%s "$image_path" 2>/dev/null || stat -f%z "$image_path") bytes"
+  [[ -n "${context_doc:-}" && -f "${context_doc:-}" ]] && {
+      echo ""
+      echo "## Surrounding context"
+      cat "$context_doc"
+  }
+} > "$DOC_BUNDLE"
+
+bash "${HOME}/.claude-octopus/plugin/scripts/helpers/lib-multi-dispatch.sh" \
+  --doc-path        "$DOC_BUNDLE" \
+  --reviewers       "$REVIEWERS_JSON" \
+  --output-dir      "$OUTPUT_DIR" \
+  --image           "$image_path" \
+  --task-prefix     "lib-inspect" \
+  --min-reviewers   1 \
+  --min-output-size 1   # visual inspections may answer in single words (e.g. "Green", "OK")
 ```
 
-After spawning, `wait`.
+The dispatcher writes `<provider>-<task_id>.md` per reviewer and `dispatch.json` + `synthesis-input.md` for the synthesis step. Per-result-file headers will indicate whether image bytes attached (`# Images attached (codex -i): ...`) or degraded (`# Images requested but provider X lacks headless image attachment`).
 
 ### STEP 4: Validation gate (MANDATORY)
 

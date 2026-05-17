@@ -2220,7 +2220,14 @@ case "$COMMAND" in
         # v8.54.0: Single-agent probe for multi-agentic skill dispatch
         # Called by Claude's Agent tool (one per perspective) instead of monolithic probe
         # v9.29.3: Parse --output-dir flag from any position (fixes #340)
+        # lestephen.23: Accept --image <path> (repeatable) for vision-capable
+        # providers (closes GH #7 / F12). Passed via env OCTO_AGENT_IMAGES
+        # (newline-separated) to probe_single_agent which splices per-provider
+        # image flags into cmd_array. Text-only providers degrade gracefully
+        # with a warning in the result file — image bytes are NOT smuggled in
+        # via the prompt body.
         _ps_args=()
+        _ps_images=()
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --output-dir)
@@ -2233,6 +2240,19 @@ case "$COMMAND" in
                         exit 1
                     fi
                     ;;
+                --image)
+                    if [[ -n "${2:-}" ]]; then
+                        if [[ ! -f "$2" ]]; then
+                            echo "Error: --image path is not a file: $2" >&2
+                            exit 1
+                        fi
+                        _ps_images+=("$2")
+                        shift 2
+                    else
+                        echo "Error: --image requires a file path argument" >&2
+                        exit 1
+                    fi
+                    ;;
                 *)
                     _ps_args+=("$1")
                     shift
@@ -2241,8 +2261,15 @@ case "$COMMAND" in
         done
         set -- "${_ps_args[@]}"
         if [[ $# -lt 3 ]]; then
-            echo "Usage: $(basename "$0") probe-single <agent_type> <perspective> <task_id> [original_prompt] [--output-dir <dir>]"
+            echo "Usage: $(basename "$0") probe-single <agent_type> <perspective> <task_id> [original_prompt] [--output-dir <dir>] [--image <path> ...]"
             exit 1
+        fi
+        if [[ ${#_ps_images[@]} -gt 0 ]]; then
+            # Newline-separated — file paths must not contain literal newlines
+            # (POSIX permits them but the broader toolchain does not).
+            # probe_single_agent reads this via mapfile -t.
+            export OCTO_AGENT_IMAGES
+            OCTO_AGENT_IMAGES=$(printf '%s\n' "${_ps_images[@]}")
         fi
         probe_single_agent "$1" "$2" "$3" "${4:-}"
         ;;

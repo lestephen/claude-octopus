@@ -155,22 +155,115 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
     local temp_errors="${RESULTS_DIR}/.tmp-${task_id}.err"
     local raw_output="${RESULTS_DIR}/.raw-${task_id}.out"
 
-    # Write result file header
+    # Append headless flag (-p "" triggers stdin reading) for CLI providers
+    # Qwen and Cursor Agent are forks of Gemini CLI — same flags
+    if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]] || [[ "$agent_type" == cursor-agent* ]]; then
+        cmd_array+=(-p "")
+    fi
+
+    # ─── lestephen.23: --image plumbing (closes F12 / GH #7) ────────────────
+    # OCTO_AGENT_IMAGES is set by `orchestrate.sh probe-single --image <path>`
+    # (newline-separated paths). We splice per-provider image flags into
+    # cmd_array here. Providers without headless vision get a warning in the
+    # result header but the dispatch continues — the model sees the text
+    # prompt and can reason about what's described, just without seeing pixels.
+    local -a _image_files=()
+    local _image_note=""
+    if [[ -n "${OCTO_AGENT_IMAGES:-}" ]]; then
+        mapfile -t _image_files <<< "$OCTO_AGENT_IMAGES"
+        # Drop empty trailing element from trailing newline in printf
+        local _last_idx=$(( ${#_image_files[@]} - 1 ))
+        [[ $_last_idx -ge 0 && -z "${_image_files[$_last_idx]}" ]] && unset '_image_files[$_last_idx]'
+    fi
+    if [[ ${#_image_files[@]} -gt 0 ]]; then
+        local _img _missing=0
+        for _img in "${_image_files[@]}"; do
+            if [[ ! -f "$_img" ]]; then
+                log "WARN" "probe_single_agent: --image path missing at dispatch time: $_img"
+                _missing=1
+            fi
+        done
+        case "$agent_type" in
+            codex|codex-standard|codex-max|codex-mini|codex-general|codex-spark|codex-reasoning|codex-large-context)
+                # codex command ends in trailing '-' (stdin marker). Insert -i
+                # flags BEFORE the trailing '-' so positional ordering survives.
+                if [[ $_missing -eq 0 ]]; then
+                    local _last="${cmd_array[-1]}"
+                    if [[ "$_last" == "-" ]]; then
+                        unset 'cmd_array[-1]'
+                        for _img in "${_image_files[@]}"; do
+                            cmd_array+=(-i "$_img")
+                        done
+                        cmd_array+=("-")
+                    else
+                        # Defensive — if the command shape changes upstream
+                        for _img in "${_image_files[@]}"; do
+                            cmd_array+=(-i "$_img")
+                        done
+                    fi
+                    _image_note="# Images attached (codex -i): $(printf '%s ' "${_image_files[@]}")"
+                else
+                    _image_note="# Images requested but missing on disk — dispatched without image attachment"
+                fi
+                ;;
+            claude|claude-sonnet|claude-opus|claude-opus-fast|claude-opus-legacy)
+                # claude CLI (--print headless) does NOT accept image flags on the
+                # command line — vision works through host conversation context.
+                # When invoked here, claude runs as an external subprocess and
+                # can't see the image. Graceful degrade: list filenames in note.
+                _image_note="# Images requested but claude CLI (--print) has no headless image attachment — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
+                log "WARN" "probe_single_agent: claude headless cannot attach images; dispatching text-only ($agent_type)"
+                ;;
+            gemini*|qwen*|cursor-agent*|copilot*|perplexity*|ollama*|opencode*|openrouter*)
+                # Gemini headless CLI rejects image attachments (400 errors
+                # observed in spike research, lestephen.22). Other providers
+                # similarly lack documented headless image flags. Degrade
+                # gracefully — list filenames in a note so the model knows
+                # what's being referenced.
+                _image_note="# Images requested but provider $agent_type lacks headless image attachment — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
+                log "WARN" "probe_single_agent: $agent_type lacks headless image attachment; dispatching text-only"
+                ;;
+            *)
+                _image_note="# Images requested but unknown provider $agent_type — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
+                ;;
+        esac
+
+        # SEV-1 (codex dogfood): for degraded providers, prepend a notice to
+        # the prompt body itself so the MODEL knows it cannot see pixels.
+        # Without this, gemini/claude/etc. happily hallucinate "I can see..."
+        # against a filename. The result-file header is for the dispatcher
+        # post-hoc; the prompt prepend is for the model in-the-moment.
+        if [[ "$_image_note" != "# Images attached"* ]]; then
+            local _files_joined
+            _files_joined=$(printf '%s\n' "${_image_files[@]}" | sed 's/^/    - /')
+            enhanced_prompt="⚠️ IMAGE INPUT WARNING (lestephen.23): The caller requested image attachment but YOUR PROVIDER ($agent_type) does not support headless image input through this dispatch path. You are receiving FILENAMES ONLY, not pixel data:
+${_files_joined}
+
+DO NOT pretend to see pixel content. If the task requires visual inspection,
+explicitly state: \"I cannot inspect image pixels via this dispatch path.\"
+You MAY still reason about the file metadata (filename, path) and provide
+structural critique based on the surrounding text prompt.
+
+---
+
+${enhanced_prompt}"
+        fi
+    fi
+
+    # Write result file header (must come AFTER -p "" + image splicing so
+    # cmd_array mutations don't separate the header from the dispatch state).
     echo "# Agent: $agent_type" > "$result_file"
     echo "# Task ID: $task_id" >> "$result_file"
     echo "# Role: $role" >> "$result_file"
     echo "# Phase: $phase" >> "$result_file"
     echo "# Prompt: ${perspective:0:200}" >> "$result_file"
     echo "# Started: $(date)" >> "$result_file"
+    if [[ -n "$_image_note" ]]; then
+        echo "$_image_note" >> "$result_file"
+    fi
     echo "" >> "$result_file"
     echo "## Output" >> "$result_file"
     echo '```' >> "$result_file"
-
-    # Append headless flag (-p "" triggers stdin reading) for CLI providers
-    # Qwen and Cursor Agent are forks of Gemini CLI — same flags
-    if [[ "$agent_type" == gemini* ]] || [[ "$agent_type" == copilot* ]] || [[ "$agent_type" == qwen* ]] || [[ "$agent_type" == cursor-agent* ]]; then
-        cmd_array+=(-p "")
-    fi
 
     # Auth-aware retry loop (same logic as spawn_agent legacy path)
     local max_auth_retries=0
