@@ -155,14 +155,18 @@ DOC_BUNDLE="$OUTPUT_DIR/image-context.md"
 } > "$DOC_BUNDLE"
 
 bash "${HOME}/.claude-octopus/plugin/scripts/helpers/lib-multi-dispatch.sh" \
-  --doc-path        "$DOC_BUNDLE" \
-  --reviewers       "$REVIEWERS_JSON" \
-  --output-dir      "$OUTPUT_DIR" \
-  --image           "$image_path" \
-  --task-prefix     "lib-inspect" \
-  --min-reviewers   1 \
-  --min-output-size 1   # visual inspections may answer in single words (e.g. "Green", "OK")
+  --doc-path              "$DOC_BUNDLE" \
+  --reviewers             "$REVIEWERS_JSON" \
+  --output-dir            "$OUTPUT_DIR" \
+  --image                 "$image_path" \
+  --task-prefix           "lib-inspect" \
+  --min-reviewers         1 \
+  --min-output-size       1 \
+  --required-lib-interface 2 \
+  --check-lib-skill       skill-lib-multi-inspect-figure
 ```
+
+The `--required-lib-interface 2 --check-lib-skill skill-lib-multi-inspect-figure` pair (lestephen.29, GH #9) verifies this consumer's expected library version against the installed SKILL.md's `interface_version:` frontmatter. If the library is older than required, the dispatcher refuses with exit code 2 — no silent contract drift. Consumers that don't care about version pinning can omit both flags.
 
 The dispatcher writes `<provider>-<task_id>.md` per reviewer and `dispatch.json` + `synthesis-input.md` for the synthesis step. Per-result-file headers will indicate whether image bytes attached (`# Images attached (codex -i): ...`) or degraded (`# Images requested but provider X lacks headless image attachment`).
 

@@ -1,6 +1,6 @@
 {
   "name": "@anthropic-plugins/claude-octopus",
-  "version": "9.38.0-lestephen.29",
+  "version": "9.38.0-lestephen.30",
   "description": "Fork of nyldn/claude-octopus \u2014 multi-LLM orchestration plugin with bug fixes, knowledge-work skills, autonomous-mode consensus gate, and --image vision dispatch.",
   "main": "scripts/orchestrate.sh",
   "scripts": {

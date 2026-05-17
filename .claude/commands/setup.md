@@ -275,6 +275,51 @@ AskUserQuestion({
 
 If "Yes", append `export ENABLE_PROMPT_CACHING_1H=1` to `~/.bashrc` (or `~/.zshrc` per `$SHELL`), only if not already present. Note to the user: this only affects Claude-to-Claude round-trips inside Claude Code. External CLI subshells (Codex, Gemini, Perplexity) are unaffected — their providers manage caching independently.
 
+## STEP 4b2: Per-provider enable/disable (lestephen.29, closes GH #6)
+
+After provider detection in STEP 3a, surface each detected-and-available provider and ask whether the user wants to leave it enabled or disable it for autonomous workflows. Disabled providers are written to `~/.claude-octopus/config/providers.json` `.disabled[]` (user scope) — they remain installed and authed but `/octo:embrace` / `/octo:review` / etc. will skip dispatch to them and `octo_provider_dispatch_guard` will block silent fallthrough.
+
+```javascript
+// For each detected provider (codex, gemini, perplexity, copilot, qwen,
+// opencode, ollama), ask once. Skip providers that weren't detected.
+for (const p of DETECTED_PROVIDERS) {
+  AskUserQuestion({
+    questions: [{
+      question: `Enable ${p.label} for Octopus workflows? Disabled providers stay installed but Octopus won't dispatch to them. You can flip this later with /octo:provider enable|disable ${p.name}.`,
+      header: `${p.name}`,
+      multiSelect: false,
+      options: [
+        {label: "Enable (default)", description: `Available for /octo:embrace, /octo:review, /octo:critique, etc. ${p.cost_note || ''}`},
+        {label: "Disable", description: `Octopus skips ${p.name} in all multi-LLM workflows. Manual /provider re-enable required.`}
+      ]
+    }]
+  })
+}
+```
+
+For each provider the user disables, run (verified-existing `provider` subcommand from lestephen.15):
+
+```bash
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider disable "${provider_name}"
+# (omit --project — defaults to --user, persisting to ~/.claude-octopus/config/providers.json)
+```
+
+To re-enable later:
+
+```bash
+bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider enable "${provider_name}"
+```
+
+Print a summary at the end of this step:
+
+```
+Provider config saved:
+  ✓ enabled: codex, gemini, claude
+  ✗ disabled: copilot (your choice — re-enable with /octo:provider enable copilot)
+```
+
+Cost callout: if the user enables provider(s) with `cost_note` (e.g. Perplexity Sonar Pro at $3/$15 MTok), note the per-call cost so they can disable specific providers if budget-conscious.
+
 ## STEP 4c: Project Tier Hint
 
 `OCTO_TIER` is a routing and verification hint, not a hard policy.

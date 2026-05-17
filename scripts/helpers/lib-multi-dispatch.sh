@@ -15,8 +15,13 @@
 #       --doc-path <path> \
 #       --reviewers <json-file> \
 #       --output-dir <dir> \
-#       [--min-reviewers <N>]    # default 2
-#       [--task-prefix <slug>]   # default "lib-dispatch"
+#       [--min-reviewers <N>]            # default 2
+#       [--task-prefix <slug>]           # default "lib-dispatch"
+#       [--resume]                       # reuse prior dispatch.json successes
+#       [--image <path>]                 # repeatable, attach image to dispatch
+#       [--min-output-size <bytes>]      # min Output-section size, default 50
+#       [--required-lib-interface <N>]   # opt-in lib-skill version pin (GH #9)
+#       [--check-lib-skill <name>]       # opt-in lib-skill version pin (GH #9)
 #
 # Inputs:
 #   --doc-path     Absolute path to the document/scope-bundle each reviewer reads.
@@ -30,6 +35,25 @@
 #                  Validation gate: require at least N successful reviewers
 #                  (out of len(reviewers)) before declaring success. Default 2.
 #   --task-prefix  Optional prefix for task IDs (helps cross-reference logs).
+#   --resume       Skip dispatch for reviewers whose prior run succeeded
+#                  (read from existing dispatch.json). lestephen.22 (C6).
+#   --image <path> Repeatable. Pass image file paths through to each reviewer's
+#                  probe-single call. lestephen.23/.24 (closes GH #7).
+#   --min-output-size N
+#                  Required minimum bytes in the per-reviewer Output section.
+#                  Default 50; lower (e.g. 1) for visual inspections that
+#                  answer in one word. lestephen.23 dogfood find.
+#   --required-lib-interface N
+#                  Opt-in min interface_version for a library skill (paired
+#                  with --check-lib-skill). Reads SKILL.md frontmatter; refuses
+#                  dispatch (exit 2) if installed < required. Replaces the
+#                  dead-text "consumers should pin this version" promise.
+#                  lestephen.29 (closes GH #9).
+#   --check-lib-skill <name>
+#                  Skill name to interface-check (e.g. skill-lib-multi-inspect-figure).
+#                  Required when --required-lib-interface is set. Searches
+#                  PLUGIN_ROOT/skills/<name>/SKILL.md and
+#                  ~/.claude-octopus/plugin/skills/<name>/SKILL.md.
 #
 # Output:
 #   stdout: structured key=value lines for the caller to parse:
@@ -71,6 +95,16 @@ IMAGES=()
 # body bytes for a reviewer to count as success. Default 50 (prose reviews).
 # Lower (e.g., 1) for visual inspection where "Green" is a valid answer.
 MIN_OUTPUT_SIZE=50
+# lestephen.29 (closes GH #9): --required-lib-interface N — opt-in caller-
+# declared minimum interface version for a referenced library skill. When set
+# together with --check-lib-skill <skill-name>, the dispatcher reads the
+# SKILL.md frontmatter `interface_version:` line and refuses to dispatch if
+# the library has a LOWER version than required (semver-style: 2 satisfies
+# 1, but 1 does not satisfy 2). Both flags are optional — consumers that
+# don't care about lib versioning omit them. Replaces the dead-text v.21
+# promise that "consumers should pin this version" (was honor-system).
+REQUIRED_LIB_INTERFACE=""
+CHECK_LIB_SKILL=""
 
 usage() {
     sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -99,6 +133,16 @@ while [[ $# -gt 0 ]]; do
                 echo "ERROR: --min-output-size requires a non-negative integer" >&2; exit 2
             fi
             MIN_OUTPUT_SIZE="$2"; shift 2 ;;
+        --required-lib-interface)
+            if [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: --required-lib-interface requires a non-negative integer" >&2; exit 2
+            fi
+            REQUIRED_LIB_INTERFACE="$2"; shift 2 ;;
+        --check-lib-skill)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --check-lib-skill requires a skill name (e.g. skill-lib-multi-review-doc)" >&2; exit 2
+            fi
+            CHECK_LIB_SKILL="$2"; shift 2 ;;
         -h|--help)       usage 0 ;;
         *)               echo "ERROR: unknown arg '$1'" >&2; usage 2 ;;
     esac
@@ -113,6 +157,76 @@ done
 [[ -n "$OUTPUT_DIR" ]] || { echo "ERROR: --output-dir required" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required" >&2; exit 2; }
 [[ -x "$ORCHESTRATE" ]] || { echo "ERROR: orchestrate.sh not executable: $ORCHESTRATE" >&2; exit 3; }
+
+# lestephen.29 (closes GH #9): interface_version compatibility check. When
+# the caller declared both --required-lib-interface and --check-lib-skill,
+# read the SKILL.md frontmatter `interface_version:` for the named skill and
+# refuse to dispatch if it's lower than required. Semver-style: higher is
+# backward-compatible.
+if [[ -n "$REQUIRED_LIB_INTERFACE" && -n "$CHECK_LIB_SKILL" ]]; then
+    # Resolve skill dir — try PLUGIN_ROOT/skills/<name>/SKILL.md, fall back
+    # to a search if the layout changes upstream.
+    _libcheck_path=""
+    for _candidate in \
+        "$PLUGIN_ROOT/skills/$CHECK_LIB_SKILL/SKILL.md" \
+        "$HOME/.claude-octopus/plugin/skills/$CHECK_LIB_SKILL/SKILL.md"; do
+        if [[ -f "$_candidate" ]]; then
+            _libcheck_path="$_candidate"
+            break
+        fi
+    done
+    if [[ -z "$_libcheck_path" ]]; then
+        echo "ERROR: --check-lib-skill '$CHECK_LIB_SKILL': SKILL.md not found" >&2
+        echo "       Searched: $PLUGIN_ROOT/skills/$CHECK_LIB_SKILL/SKILL.md" >&2
+        echo "                 $HOME/.claude-octopus/plugin/skills/$CHECK_LIB_SKILL/SKILL.md" >&2
+        exit 2
+    fi
+    # Extract interface_version: N from frontmatter. Distinguish "absent
+    # field" (sentinel "__ABSENT__") from "explicit 0" so we can give the
+    # right diagnostic — lestephen.30 v2 fix to claude SEV-2 (was conflated
+    # as "Has version: 0"). Permissive regex trims trailing whitespace and
+    # rejects inline comments — fix to gemini SEV-2 (strict-regex fragility).
+    _libcheck_actual=$(awk '
+        /^---$/ { fm++ ; if (fm == 2) exit ; next }
+        fm == 1 && /^interface_version:[[:space:]]*[0-9]+/ {
+            # Trim leading key+spaces, then trailing spaces or # comments
+            sub(/^interface_version:[[:space:]]*/, "")
+            sub(/[[:space:]]*(#.*)?$/, "")
+            print
+            found = 1
+            exit
+        }
+        END { if (!found) print "__ABSENT__" }
+    ' "$_libcheck_path")
+    if [[ "$_libcheck_actual" == "__ABSENT__" ]]; then
+        cat >&2 <<EOF
+ERROR: --check-lib-skill '$CHECK_LIB_SKILL': SKILL.md exists but has no
+       'interface_version:' line in frontmatter.
+       Path: $_libcheck_path
+       Either add 'interface_version: N' to the SKILL.md frontmatter,
+       or omit --check-lib-skill if the skill hasn't adopted versioning yet.
+EOF
+        exit 2
+    fi
+    if [[ ! "$_libcheck_actual" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: --check-lib-skill '$CHECK_LIB_SKILL': interface_version frontmatter value '$_libcheck_actual' is not a non-negative integer" >&2
+        exit 2
+    fi
+    if [[ "$_libcheck_actual" -lt "$REQUIRED_LIB_INTERFACE" ]]; then
+        cat >&2 <<EOF
+ERROR: Library skill interface version mismatch (closes GH #9).
+       Skill:        $CHECK_LIB_SKILL ($_libcheck_path)
+       Has version:  $_libcheck_actual
+       Required min: $REQUIRED_LIB_INTERFACE
+       Caller pinned a higher interface version than the library currently
+       provides. This usually means the library was rolled back, or the
+       caller was written against a future version that hasn't landed yet.
+       Pin a lower --required-lib-interface, or update the library skill.
+EOF
+        exit 2
+    fi
+    echo "Lib interface check OK: $CHECK_LIB_SKILL v$_libcheck_actual >= required v$REQUIRED_LIB_INTERFACE" >&2
+fi
 
 mkdir -p "$OUTPUT_DIR"
 

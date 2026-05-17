@@ -1,7 +1,7 @@
 ---
 command: visual-review
 description: "Multi-LLM code review with mockup-context preamble forcing reviewers to ground tokens against a reference artifact (lestephen.23 — closes GH #11 cheapest leg)"
-argument-hint: '<reference-path> [--wait|--background] [--base <ref>] [--scope auto|working-tree|branch|pr|staged]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch|pr|staged] <reference-path>'
 ---
 
 # /octo:visual-review
