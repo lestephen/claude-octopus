@@ -250,30 +250,89 @@ DOC_CONTENT=$(cat "$DOC_PATH")
 TS=$(date +%s)
 
 # Track dispatched tasks for the validation gate
-declare -a TASK_LABELS  # perspective_label
-declare -a TASK_AGENTS  # agent_type
-declare -a TASK_IDS     # task_id (used to construct expected file path)
-declare -a TASK_PIDS    # background pid
+declare -a TASK_LABELS        # perspective_label
+declare -a TASK_AGENTS        # agent_type
+declare -a TASK_IDS           # task_id (used to construct expected file path)
+declare -a TASK_PIDS          # background pid
+declare -a TASK_FINGERPRINTS  # sha256 of (agent|prompt|doc|images) — GH #8
 
 # lestephen.22 (C6): --resume — build set of labels that succeeded last time
 # so we can skip them and dispatch only the failures.
-declare -A PRIOR_SUCCESS_LABELS  # label -> output_file from prior dispatch.json
-declare -A PRIOR_SUCCESS_AGENTS  # label -> agent_type from prior dispatch.json
-declare -A PRIOR_SUCCESS_IDS     # label -> task_id from prior dispatch.json
+# lestephen.30 (closes GH #8): also load fingerprints — a label match alone
+# isn't enough. If the reviewer prompt, doc content, agent_type, or image set
+# changes between runs, the prior output is stale and must NOT be reused.
+declare -A PRIOR_SUCCESS_LABELS       # label -> output_file
+declare -A PRIOR_SUCCESS_AGENTS       # label -> agent_type
+declare -A PRIOR_SUCCESS_IDS          # label -> task_id
+declare -A PRIOR_SUCCESS_FINGERPRINTS # label -> sha256:agent|prompt|doc|images
 PRIOR_SUCCESS_COUNT=0
 if [[ "$RESUME" == "true" && -f "$OUTPUT_DIR/dispatch.json" ]]; then
     echo "Resume mode — reading prior dispatch.json..." >&2
-    while IFS=$'\t' read -r label agent task_id outcome output_file; do
+    # v2 SEV-2 gemini fix: jq @tsv escapes literal tabs in values as \t,
+    # then bash IFS=$'\t' splits on real tabs — the escaped \t stays glued
+    # to its field, corrupting labels with tabs in them. Use NUL-delimited
+    # iteration via jq -j + read -d '' (handles any byte except NUL).
+    while IFS= read -r _entry; do
+        [[ -z "$_entry" ]] && continue
+        # Each $_entry is a JSON object {label, agent_type, task_id, outcome,
+        # output_file, fingerprint}. Parse with jq, which handles all
+        # quoting / escaping correctly (closes v2 SEV-1 JSON injection from
+        # gemini consensus + v2 SEV-2 label-with-special-chars from same).
+        label=$(jq -r '.label'                              <<<"$_entry")
+        agent=$(jq -r '.agent_type'                         <<<"$_entry")
+        task_id=$(jq -r '.task_id'                          <<<"$_entry")
+        outcome=$(jq -r '.outcome'                          <<<"$_entry")
+        output_file=$(jq -r '.output_file'                  <<<"$_entry")
+        fingerprint=$(jq -r '.fingerprint // "__MISSING__"' <<<"$_entry")
         [[ -z "$label" || -z "$outcome" ]] && continue
         if [[ "$outcome" == "success" && -s "$output_file" ]]; then
             PRIOR_SUCCESS_LABELS[$label]="$output_file"
             PRIOR_SUCCESS_AGENTS[$label]="$agent"
             PRIOR_SUCCESS_IDS[$label]="$task_id"
+            # fingerprint may be missing in dispatch.json from older runs
+            # (pre-lestephen.30) — treat absent as "always re-dispatch" so
+            # stale-by-omission doesn't slip through.
+            PRIOR_SUCCESS_FINGERPRINTS[$label]="${fingerprint:-__MISSING__}"
             ((PRIOR_SUCCESS_COUNT++))
         fi
-    done < <(jq -r '.reviewers[] | [.label, .agent_type, .task_id, .outcome, .output_file] | @tsv' "$OUTPUT_DIR/dispatch.json" 2>/dev/null)
-    echo "Resuming: $PRIOR_SUCCESS_COUNT reviewers already succeeded; will dispatch only failures." >&2
+    done < <(jq -c '.reviewers[]' "$OUTPUT_DIR/dispatch.json" 2>/dev/null)
+    echo "Resuming: $PRIOR_SUCCESS_COUNT reviewers from prior run (will validate fingerprints before reuse)." >&2
 fi
+
+# Pre-compute IMAGES fingerprint (newline-separated paths + per-file sha256
+# of the bytes — if the file changes between runs, fingerprint changes too).
+# v2 SEV-2 gemini fix: use printf %s not %b so backslashes in image paths
+# (e.g. Windows-style) aren't interpreted as escape sequences.
+_images_fp_input=""
+if [[ ${#IMAGES[@]} -gt 0 ]]; then
+    for _img in "${IMAGES[@]}"; do
+        _img_hash=$(sha256sum "$_img" 2>/dev/null | cut -c1-16)
+        _images_fp_input+=$(printf '%s@%s\n' "$_img" "${_img_hash:-MISSING}")
+        _images_fp_input+=$'\n'  # explicit newline (not via printf interpretation)
+    done
+fi
+
+# Pre-compute DOC content sha256 — hash the file BYTES directly, not the
+# $(cat)-stripped version. v2 SEV-2 gemini fix: $(cat) strips trailing
+# newlines, so a doc that only differs by trailing whitespace would be
+# treated as identical. Hashing the file bytes preserves all bytes.
+_doc_sha=$(sha256sum "$DOC_PATH" 2>/dev/null | cut -c1-16)
+
+# Helper: compute reviewer fingerprint.
+# Inputs: agent_type, prompt. Globals: $_doc_sha, $_images_fp_input.
+# Output: 16-char sha256 hex.
+# v2 SEV-2 gemini fix: printf %s for all inputs (NOT %b — would interpret
+# escape sequences in arbitrary input). Newlines are explicit string concats.
+compute_reviewer_fingerprint() {
+    local _agent="$1"
+    local _prompt="$2"
+    {
+        printf '%s\n' "$_agent"
+        printf '%s\n' "$_doc_sha"
+        printf '%s\n' "$_prompt"
+        printf '%s' "$_images_fp_input"
+    } | sha256sum | cut -c1-16
+}
 
 # Dispatch each reviewer (skipping ones that succeeded in a prior --resume run)
 for i in $(seq 0 $((reviewers_count - 1))); do
@@ -289,15 +348,30 @@ for i in $(seq 0 $((reviewers_count - 1))); do
         echo "ERROR: reviewers[$i].prompt missing" >&2; exit 2;
     }
 
-    # lestephen.22 (C6): skip reviewers that succeeded in a prior dispatch
+    # Compute fingerprint for this reviewer (used both for resume-validation
+    # and for the eventual dispatch.json entry).
+    current_fp=$(compute_reviewer_fingerprint "$agent" "$prompt")
+
+    # lestephen.22 (C6) + lestephen.30 (closes GH #8): skip reviewers that
+    # succeeded in a prior dispatch ONLY when the fingerprint matches —
+    # i.e. agent_type, prompt, doc content, AND image bytes are all unchanged.
+    # Otherwise, re-dispatch with the new input.
     if [[ -n "${PRIOR_SUCCESS_LABELS[$label]:-}" ]]; then
-        echo "⏭️  ${label} (${agent}) — skipped (prior success: ${PRIOR_SUCCESS_LABELS[$label]})" >&2
-        # Re-record so they appear in dispatch.json + synthesis-input.md
-        TASK_LABELS+=("$label")
-        TASK_AGENTS+=("${PRIOR_SUCCESS_AGENTS[$label]}")
-        TASK_IDS+=("${PRIOR_SUCCESS_IDS[$label]}")
-        TASK_PIDS+=("")  # no pid — already done
-        continue
+        prior_fp="${PRIOR_SUCCESS_FINGERPRINTS[$label]:-__MISSING__}"
+        if [[ "$prior_fp" == "$current_fp" ]]; then
+            echo "⏭️  ${label} (${agent}) — skipped (fingerprint match: $current_fp; prior: ${PRIOR_SUCCESS_LABELS[$label]})" >&2
+            TASK_LABELS+=("$label")
+            TASK_AGENTS+=("${PRIOR_SUCCESS_AGENTS[$label]}")
+            TASK_IDS+=("${PRIOR_SUCCESS_IDS[$label]}")
+            TASK_FINGERPRINTS+=("$current_fp")
+            TASK_PIDS+=("")  # no pid — already done
+            continue
+        else
+            # Fingerprint changed — prior output is stale. Tell the user
+            # specifically why we're re-dispatching.
+            echo "🔁  ${label} (${agent}) — re-dispatch (fingerprint differs: prior=$prior_fp current=$current_fp)" >&2
+            # Fall through to fresh dispatch.
+        fi
     fi
 
     # Slugify label for task_id
@@ -337,6 +411,7 @@ ${DOC_CONTENT}"
     TASK_LABELS+=("$label")
     TASK_AGENTS+=("$agent")
     TASK_IDS+=("$task_id")
+    TASK_FINGERPRINTS+=("$current_fp")
     TASK_PIDS+=("$pid")
 done
 
@@ -391,29 +466,35 @@ for i in "${!TASK_LABELS[@]}"; do
     fi
 done
 
-# Build dispatch.json summary
+# Build dispatch.json summary via jq (closes GH #8 v2 gemini SEV-1: prior
+# printf-based construction didn't escape double quotes or backslashes in
+# labels/agent_types/paths — would produce invalid JSON and break --resume).
+# jq -n with --arg/--argjson handles all escaping automatically.
 {
-    echo '{'
-    echo '  "output_dir": "'"$OUTPUT_DIR"'",'
-    echo '  "doc_path": "'"$DOC_PATH"'",'
-    echo '  "min_reviewers": '"$MIN_REVIEWERS"','
-    echo '  "total": '"$reviewers_count"','
-    echo '  "success": '"$SUCCESS_COUNT"','
-    echo '  "failed": '"$FAILED_COUNT"','
-    echo '  "reviewers": ['
+    # Build reviewers array as a JSON document. Loop emits one object per
+    # reviewer; jq -s concatenates and the outer jq merges with metadata.
+    _reviewers_array='[]'
     for i in "${!TASK_LABELS[@]}"; do
-        sep=","
-        [[ $i -eq $((${#TASK_LABELS[@]} - 1)) ]] && sep=""
-        printf '    {"label":"%s","agent_type":"%s","task_id":"%s","outcome":"%s","output_file":"%s"}%s\n' \
-            "${TASK_LABELS[$i]}" \
-            "${TASK_AGENTS[$i]}" \
-            "${TASK_IDS[$i]}" \
-            "${TASK_OUTCOMES[$i]}" \
-            "$OUTPUT_DIR/${TASK_AGENTS[$i]}-${TASK_IDS[$i]}.md" \
-            "$sep"
+        _reviewers_array=$(jq -n \
+            --argjson existing "$_reviewers_array" \
+            --arg label       "${TASK_LABELS[$i]}" \
+            --arg agent_type  "${TASK_AGENTS[$i]}" \
+            --arg task_id     "${TASK_IDS[$i]}" \
+            --arg outcome     "${TASK_OUTCOMES[$i]}" \
+            --arg output_file "$OUTPUT_DIR/${TASK_AGENTS[$i]}-${TASK_IDS[$i]}.md" \
+            --arg fingerprint "${TASK_FINGERPRINTS[$i]:-MISSING}" \
+            '$existing + [{label: $label, agent_type: $agent_type, task_id: $task_id, outcome: $outcome, output_file: $output_file, fingerprint: $fingerprint}]')
     done
-    echo '  ]'
-    echo '}'
+    jq -n \
+        --arg output_dir "$OUTPUT_DIR" \
+        --arg doc_path "$DOC_PATH" \
+        --arg doc_sha "$_doc_sha" \
+        --argjson min_reviewers "$MIN_REVIEWERS" \
+        --argjson total "$reviewers_count" \
+        --argjson success "$SUCCESS_COUNT" \
+        --argjson failed "$FAILED_COUNT" \
+        --argjson reviewers "$_reviewers_array" \
+        '{output_dir: $output_dir, doc_path: $doc_path, doc_sha: $doc_sha, min_reviewers: $min_reviewers, total: $total, success: $success, failed: $failed, fingerprint_version: 1, reviewers: $reviewers}'
 } > "$OUTPUT_DIR/dispatch.json"
 
 # Validation gate
