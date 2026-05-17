@@ -1,7 +1,7 @@
 From b62346827544c99c34e87a3f7170f4f87c4e9327 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 14:45:17 -0700
-Subject: [PATCH 14/19] docs: update FORK_PATCHES.md and patches/ for
+Subject: [PATCH 14/20] docs: update FORK_PATCHES.md and patches/ for
  v9.38.0-lestephen.6
 
 Adds Patches #11-13 sections (docs refresh, check_first_run auth fix,

@@ -1,7 +1,7 @@
 From 1c34462ae2645e7ac7a7b0a6e3c570d51939760c Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 11:57:21 -0700
-Subject: [PATCH 03/19] feat(orchestrate): PROJECT_ROOT fallback when cwd is a
+Subject: [PATCH 03/20] feat(orchestrate): PROJECT_ROOT fallback when cwd is a
  plugin install dir
 
 orchestrate.sh captured PROJECT_ROOT=${PWD} unconditionally, so callers

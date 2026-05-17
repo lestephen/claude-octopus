@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 20 commits on top of `upstream/main` (currently at
+This fork carries 21 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.12`.
+`v9.38.0-lestephen.13`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -44,7 +44,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 17 | `0f34024` | fix  | Tangle: kill subprocess tree on EXIT/SIGTERM/SIGINT | **Yes — clear bug, independent of #15/#16** |
 | 18 | `706203c` | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
 | 19 | `035d36f` | feat  | Knowledge-work Phase 1: skill-defensibility-pass, skill-argument-strength + 3 library skills (multi-review-doc, multi-inspect-figure, independent-recompute) | Plausible — universal multi-LLM skills; discuss adversarial-review framing with maintainer first |
-| 20 | _pending_ | fix   | Library skills: correct probe-single call signature (prompt is `$2` not `$4`) and output file pattern (`<agent>-<task_id>.md`) | Bundle with #19 — fixes the same code path |
+| 20 | `30297db` | fix   | Library skills: correct probe-single call signature (prompt is `$2` not `$4`) and output file pattern (`<agent>-<task_id>.md`) | Bundle with #19 — fixes the same code path |
+| 21 | _pending_ | feat  | Slash command shortcuts for new skills (`/defensibility`, `/argument-strength`); command count 48→50 across manifests | Bundle with #19 — surfaces the new skills as first-class commands |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -985,7 +986,7 @@ what knowledge-work should look like.
 
 ## Patch 20 — `fix(km-lib): correct probe-single call signature and output file pattern in library skills`
 
-**Commit:** _pending_
+**Commit:** `30297db`
 **Files:** `skills/skill-lib-multi-review-doc/SKILL.md`, `skills/skill-lib-multi-inspect-figure/SKILL.md`, `skills/skill-lib-independent-recompute/SKILL.md`
 
 ### Bug
@@ -1034,6 +1035,42 @@ as an upstream PR, squash these two into a single feature commit.
 
 ---
 
+## Patch 21 — `feat(km): slash-command shortcuts for defensibility and argument-strength`
+
+**Commit:** _pending_
+**Files:** `.claude/commands/defensibility.md` (new), `.claude/commands/argument-strength.md` (new), `.claude-plugin/plugin.json` (commands list), 6 manifest files (command count 48→50)
+
+### Background
+
+Patch #19 introduced two end-user skills — `skill-defensibility-pass`
+and `skill-argument-strength` — and registered them in `plugin.json`.
+However, end users invoke octopus skills primarily through slash
+commands (`/defensibility`, `/argument-strength`, `/debate`, etc.),
+which require a separate `.claude/commands/<name>.md` shortcut file
+per existing convention (see `debate.md`, `review.md`, `security.md`).
+Patch #19 missed creating these shortcuts, leaving the new skills
+discoverable only via `/octo:skill-defensibility-pass` and
+`/octo:skill-argument-strength` — discoverable but un-ergonomic.
+
+### Fix
+
+- New `.claude/commands/defensibility.md` with MANDATORY COMPLIANCE
+  + EXECUTION MECHANISM blocks mirroring `debate.md` style. Routes to
+  `skill-defensibility-pass`.
+- New `.claude/commands/argument-strength.md` with the same pattern.
+- Updated `commands[]` array in `.claude-plugin/plugin.json`.
+- Bumped command count `48 → 50` across all 6 user-facing strings
+  (`marketplace.json` description, `codex-plugin/plugin.json`
+  longDescription, `factory-plugin/{plugin,marketplace}.json`
+  descriptions, `README.md`, `.claude-plugin/README.md`).
+
+### Upstream PR strategy
+
+Bundle with #19 — these are the user-facing wrappers for the skills
+that patch introduced.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1051,7 +1088,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 20 patches as mbox
+The `patches/` directory in this fork contains all 21 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

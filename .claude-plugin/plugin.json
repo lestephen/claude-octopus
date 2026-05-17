@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.12",
+  "version": "9.38.0-lestephen.13",
   "description": "Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",
@@ -120,6 +120,8 @@
     "./.claude/commands/staged-review.md",
     "./.claude/commands/design-ui-ux.md",
     "./.claude/commands/debate.md",
+    "./.claude/commands/defensibility.md",
+    "./.claude/commands/argument-strength.md",
     "./.claude/commands/research.md",
     "./.claude/commands/resume.md",
     "./.claude/commands/careful.md",
