@@ -61,6 +61,7 @@ REVIEWERS_JSON=""
 OUTPUT_DIR=""
 MIN_REVIEWERS=2
 TASK_PREFIX="lib-dispatch"
+RESUME=false   # lestephen.22 (C6): --resume picks up where prior run left off
 
 usage() {
     sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -75,6 +76,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir)    OUTPUT_DIR="$2"; shift 2 ;;
         --min-reviewers) MIN_REVIEWERS="$2"; shift 2 ;;
         --task-prefix)   TASK_PREFIX="$2"; shift 2 ;;
+        --resume)        RESUME=true; shift ;;
         -h|--help)       usage 0 ;;
         *)               echo "ERROR: unknown arg '$1'" >&2; usage 2 ;;
     esac
@@ -117,7 +119,27 @@ declare -a TASK_AGENTS  # agent_type
 declare -a TASK_IDS     # task_id (used to construct expected file path)
 declare -a TASK_PIDS    # background pid
 
-# Dispatch each reviewer
+# lestephen.22 (C6): --resume — build set of labels that succeeded last time
+# so we can skip them and dispatch only the failures.
+declare -A PRIOR_SUCCESS_LABELS  # label -> output_file from prior dispatch.json
+declare -A PRIOR_SUCCESS_AGENTS  # label -> agent_type from prior dispatch.json
+declare -A PRIOR_SUCCESS_IDS     # label -> task_id from prior dispatch.json
+PRIOR_SUCCESS_COUNT=0
+if [[ "$RESUME" == "true" && -f "$OUTPUT_DIR/dispatch.json" ]]; then
+    echo "Resume mode — reading prior dispatch.json..." >&2
+    while IFS=$'\t' read -r label agent task_id outcome output_file; do
+        [[ -z "$label" || -z "$outcome" ]] && continue
+        if [[ "$outcome" == "success" && -s "$output_file" ]]; then
+            PRIOR_SUCCESS_LABELS[$label]="$output_file"
+            PRIOR_SUCCESS_AGENTS[$label]="$agent"
+            PRIOR_SUCCESS_IDS[$label]="$task_id"
+            ((PRIOR_SUCCESS_COUNT++))
+        fi
+    done < <(jq -r '.reviewers[] | [.label, .agent_type, .task_id, .outcome, .output_file] | @tsv' "$OUTPUT_DIR/dispatch.json" 2>/dev/null)
+    echo "Resuming: $PRIOR_SUCCESS_COUNT reviewers already succeeded; will dispatch only failures." >&2
+fi
+
+# Dispatch each reviewer (skipping ones that succeeded in a prior --resume run)
 for i in $(seq 0 $((reviewers_count - 1))); do
     agent=$(jq -r ".[$i].agent_type" "$REVIEWERS_JSON")
     label=$(jq -r ".[$i].perspective_label" "$REVIEWERS_JSON")
@@ -130,6 +152,17 @@ for i in $(seq 0 $((reviewers_count - 1))); do
     [[ -z "$prompt" || "$prompt" == "null" ]] && {
         echo "ERROR: reviewers[$i].prompt missing" >&2; exit 2;
     }
+
+    # lestephen.22 (C6): skip reviewers that succeeded in a prior dispatch
+    if [[ -n "${PRIOR_SUCCESS_LABELS[$label]:-}" ]]; then
+        echo "⏭️  ${label} (${agent}) — skipped (prior success: ${PRIOR_SUCCESS_LABELS[$label]})" >&2
+        # Re-record so they appear in dispatch.json + synthesis-input.md
+        TASK_LABELS+=("$label")
+        TASK_AGENTS+=("${PRIOR_SUCCESS_AGENTS[$label]}")
+        TASK_IDS+=("${PRIOR_SUCCESS_IDS[$label]}")
+        TASK_PIDS+=("")  # no pid — already done
+        continue
+    fi
 
     # Slugify label for task_id
     slug=$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/--*/-/g; s/^-\|-$//g')
@@ -160,10 +193,15 @@ ${DOC_CONTENT}"
     TASK_PIDS+=("$pid")
 done
 
-# Wait for all dispatches
+# Wait for all dispatches (skip ones that were resumed — empty PID slot)
 declare -a TASK_RCS
 for i in "${!TASK_PIDS[@]}"; do
-    wait "${TASK_PIDS[$i]}" 2>/dev/null
+    pid="${TASK_PIDS[$i]}"
+    if [[ -z "$pid" ]]; then
+        TASK_RCS+=("0")  # resumed — assume success (validated below)
+        continue
+    fi
+    wait "$pid" 2>/dev/null
     TASK_RCS+=("$?")
 done
 

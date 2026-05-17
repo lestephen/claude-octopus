@@ -85,21 +85,30 @@ Users can invoke the debate skill in natural language. You parse the intent and 
 ```
 
 ### With File References
-Users can mention files naturally - you resolve them to full paths:
-```
-/debate Is our CLAUDE.md accurate?
--> You resolve to full absolute path
+Users can mention files naturally - you resolve them to full paths.
 
-/debate Review the auth flow in src/auth.ts
--> You find src/auth.ts relative to cwd and pass full path to advisors
-```
-
-### Examples Users Might Say
+### Examples Users Might Say (DECISIONS between options — not single-artifact reviews)
 - `/debate Should we use Redis or in-memory cache?`
-- `/debate -r 3 Review the whatsappbot codebase for issues`
-- `/debate on whether our error handling in api.ts is sufficient`
-- `Run a debate about the database schema design`
-- `I want gemini and codex to review this PR`
+- `/debate Should we add the new endpoint to the existing service or a new one?`
+- `/debate Should we adopt Tailwind for the new UI?`
+
+### When NOT to use `/debate`
+
+**lestephen.22 (G5):** `/debate` is for resolving between N specified options. For other shapes, route to the right command:
+
+| You want to… | Use |
+|---|---|
+| Decide between 2+ specific options | `/octo:debate` (this) |
+| Find code defects in a change | `/octo:review --scope <branch\|working-tree\|pr>` |
+| Challenge an architecture / approach / technology choice | `/octo:critique <target>` |
+| Stress-test a written argument | `/octo:argument-strength <draft>` |
+| Hostile-review gate before external send | `/octo:defensibility <doc>` |
+| Diagnose an error / test failure / broken behavior | `/octo:debug <symptom>` |
+| Security audit a code change | `/octo:security <scope>` |
+
+`/debate Review the auth flow` is NOT a debate — it's a critique. Route to `/octo:critique src/auth.ts` instead.
+
+`/debate Is our CLAUDE.md accurate?` is NOT a debate — it's a single-doc review. Route to `/octo:critique CLAUDE.md` or `/octo:argument-strength CLAUDE.md` depending on whether the question is about facts (critique) or argument structure (argument-strength).
 
 
 ## Flags

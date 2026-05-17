@@ -25,11 +25,16 @@
 #   6. $HOME/.claude/plugins/cache/*/profiles/default.yaml — any installed plugin profile
 
 octo_load_profile() {
+    # lestephen.22 (critique #2 Codex F5): canonical octopus-native path
+    # (~/.claude-octopus/config/profile.yaml) takes precedence over the
+    # XDG path. This matches the documented "canonical" recommendation
+    # in skill-defensibility-pass and keeps a stale XDG profile from
+    # overriding the recommended location.
     local candidates=(
         "${OCTOPUS_KW_PROFILE:-}"
         "./.octopus/profile.yaml"
-        "$HOME/.config/octopus/profile.yaml"
         "$HOME/.claude-octopus/config/profile.yaml"
+        "$HOME/.config/octopus/profile.yaml"
     )
 
     # Plugin install paths via glob — expand and add to candidates
@@ -49,12 +54,25 @@ octo_load_profile() {
         if grep -q "<PLACEHOLDER" "$p" 2>/dev/null; then
             OCTO_PROFILE_STATUS="template"
         else
-            # Validate it parses as YAML if python is around
-            if command -v python3 >/dev/null 2>&1; then
-                if ! python3 -c "import sys,yaml; yaml.safe_load(open('$p'))" 2>/dev/null; then
+            # lestephen.22 (codex F3 — critique #2 finding): if the highest-
+            # priority profile is malformed, STOP and report malformed —
+            # don't silently fall through to a lower-priority profile.
+            # A user with a malformed high-priority profile expects that
+            # to be the active one; loading a stale default would use the
+            # wrong audience matrix / banned terms.
+            # lestephen.22 (codex F4): only validate YAML when PyYAML is
+            # actually importable; many default python3 installs lack it.
+            if command -v python3 >/dev/null 2>&1 \
+               && python3 -c "import yaml" 2>/dev/null; then
+                if ! python3 - "$p" <<'PYEOF' 2>/dev/null
+import sys, yaml
+yaml.safe_load(open(sys.argv[1]))
+PYEOF
+                then
                     OCTO_PROFILE_STATUS="malformed"
-                    OCTO_PROFILE_PATH=""
-                    continue
+                    # Per critique F3: preserve PATH for user diagnosis;
+                    # STOP iteration so lower-priority profiles don't mask the failure
+                    break
                 fi
             fi
             OCTO_PROFILE_STATUS="loaded"
@@ -74,6 +92,6 @@ octo_profile_status_line() {
         loaded)    echo "Profile: $OCTO_PROFILE_PATH (status: loaded)" ;;
         template)  echo "Profile: $OCTO_PROFILE_PATH (status: template — placeholders present)" ;;
         malformed) echo "Profile: malformed (last attempted: $OCTO_PROFILE_PATH)" ;;
-        missing|*) echo "Profile: not found — install: ln -s <yourrepo>/profile.yaml ~/.config/octopus/profile.yaml" ;;
+        missing|*) echo "Profile: not found — install: ln -s <yourrepo>/profile.yaml ~/.claude-octopus/config/profile.yaml" ;;
     esac
 }

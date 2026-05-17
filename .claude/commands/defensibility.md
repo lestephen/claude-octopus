@@ -2,6 +2,7 @@
 command: defensibility
 description: "Hostile-review gate before a document goes external — independent recompute, methodology audit, internal-terms scrub"
 skill: skill-defensibility-pass
+argument-hint: '<doc-path> [--audience customer|supplier|regulator|counterparty|public] [--source-data-dir <dir>] [--profile <path>]'
 ---
 
 # Defensibility Pass

@@ -2,6 +2,7 @@
 command: critique
 description: "Adversarial multi-LLM review of any user-specified scope — code, docs, designs, technology choices, approaches"
 skill: skill-critique
+argument-hint: '<target> [--scope-type code-change|design-doc|technology-choice|approach|architecture|decision] [--audience internal-skeptic|customer|expert-peer|competitor] [--angles list,of,angles]'
 ---
 
 # Critique

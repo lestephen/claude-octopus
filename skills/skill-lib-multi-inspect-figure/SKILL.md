@@ -4,7 +4,7 @@ description: "Library: dispatch a rendered figure to multiple vision-capable pro
 interface_version: 1
 ---
 
-> **Interface version 1** — Consumer skills should pin this version. The image-attachment path is known-incomplete (see audit issue F12); when v2 lands with provider-specific multimodal payload support, the interface_version will bump and old consumers will get a compat warning.
+> **Interface version 1** — Consumer skills should pin this version. The image-attachment path is known-incomplete: providers receive the image PATH as text, not pixels. Tracking: GH #7. Until v2 lands with provider-specific attachment passthrough, vision providers infer from filename rather than actual visual content — degraded recall. Consumers should warn users about this until the issue is closed.
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
 > Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.

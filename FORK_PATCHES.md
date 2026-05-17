@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 29 commits on top of `upstream/main` (currently at
+This fork carries 30 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.21`.
+`v9.38.0-lestephen.22`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -53,7 +53,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 26 | `2befccf` | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
 | 27 | `229646a` | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
 | 28 | `ca0d2bc` | fix   | PR 1 ship-blockers from dogfood audit: F1 dispatch-guard (provider disable now enforced), F2/F3 debate prompt corruption + mode validation, F6/F7/F10/F11 bump-fork + provider-config atomicity / flock / name validation, G2 critique bundle → temp file, G3 defensibility-pass hardening | **Yes — bundle of clear bug fixes** |
-| 29 | _pending_ | refactor | PR 2 architectural: C5 real-bash `lib-multi-dispatch.sh` helper + interface_version on lib-* skills; C1 consolidate profile loading into `lib/load-octo-profile.sh`; misc audit fixes (F5 jq hyphen keys, F8 status allowlist message, F9 doctor source-aware remediation, F13 recompute compute_status field, C3 status exit codes, C7 multi-arg disable, C8 critique verdict.json) | Plausible — architectural improvement worth maintainer discussion |
+| 29 | `5c18769` | refactor | PR 2 architectural: C5 real-bash `lib-multi-dispatch.sh` helper + interface_version on lib-* skills; C1 consolidate profile loading into `lib/load-octo-profile.sh`; misc audit fixes (F5 jq hyphen keys, F8 status allowlist message, F9 doctor source-aware remediation, F13 recompute compute_status field, C3 status exit codes, C7 multi-arg disable, C8 critique verdict.json) | Plausible — architectural improvement worth maintainer discussion |
+| 30 | _pending_ | feat+fix | PR 3 deferred + autonomous-mode: new `skill-autonomous-mode` + `/octo:autonomous` for self-paced session control with file-issue-on-blocker protocol; F4 model-resolver bare agent_type recursion; C6 `--resume` in lib-multi-dispatch; docs/UX (G4 canonical profile path, G5 cross-skill routing table, G6 argument-hint frontmatter); +10 fixes from self-critique dogfood (autonomous mode precedence vs other skills' halts, destructive-action exemption expansion, malformed-profile no-fallthrough, etc.). 3 deferred items filed as GH #8/#9/#10. F12 image attachment filed as #7. | Plausible — substantive new skill + several fixes |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1508,6 +1509,76 @@ Plausible upstream PR. The real-bash dispatch helper is genuinely useful for any
 
 ---
 
+## Patch 30 — `feat+fix: autonomous-mode skill + deferred audit items (F4 / C6 / G4 / G5 / G6) + dogfood-critique fixes`
+
+**Commit:** _pending_
+
+Bundles the PR 3 batch: the deferred items from the prior dogfood audit, a new behavioral protocol skill for autonomous sessions, and the fixes from running `/octo:critique` on this patch before commit. Total: 14 fixes + 1 new skill, 4 GH issues filed for items deferred.
+
+### New: `skill-autonomous-mode` + `/octo:autonomous`
+
+Codifies the "work autonomously, file issues for blockers at discovery time" protocol. When the user grants explicit autonomy ("work autonomously" / `/octo:autonomous <task>`), the skill instructs Claude to:
+
+- Make reasonable judgment calls without confirming each one
+- File a GH issue (or local `ISSUES.md` if no remote) the moment a blocker requires user input — at discovery time, not batched at session end
+- Continue past blockers with documented assumptions
+- Skip irreversible destructive actions even under autonomy (expanded list: filesystem deletion, git history rewrites, infra destruction, schema drops, secret rotation, public publishes)
+- End with a structured summary (Shipped / Issues filed / Encoded assumptions / Explicitly deferred)
+
+Includes explicit precedence vs other skills' MANDATORY COMPLIANCE rules: autonomous overrides "ask user" halts EXCEPT for safety/compliance gates (defensibility-BLOCKED, security HIGH, ship critical) and explicit destructive actions.
+
+### F4: model-resolver bare agent_type recursion
+
+`scripts/lib/model-resolver.sh` — when role/phase routing returned a bare value matching an `agent_type` shape (e.g., `gemini-fast`, `claude-opus`), the existing code treated it as a literal model name. Now uses `octo_provider_for_agent_type` to detect the case and recurse via `resolve_octopus_model` for same-provider matches; skip for cross-provider. Sources `provider-allowlist.sh` from BASH_SOURCE-relative path first (works in test harnesses + dev checkouts), then falls back to installed path.
+
+### C6: `--resume` flag in lib-multi-dispatch.sh
+
+After a partial-failure dispatch, `--resume` reads the prior `dispatch.json`, skips reviewers that succeeded (re-records their outputs), and re-dispatches only the failures. Recovers from transient provider outages without re-running everything.
+
+(Known limitation: identity by `perspective_label` only. Changing the doc/prompt between runs while keeping the label silently merges stale output. Tracked as GH #8.)
+
+### G4: canonical profile path + malformed-profile semantics
+
+`scripts/lib/load-octo-profile.sh` reordered so `$HOME/.claude-octopus/config/profile.yaml` takes precedence over the XDG path (matches the documented canonical recommendation). Malformed high-priority profiles now STOP iteration (`OCTO_PROFILE_STATUS=malformed`) rather than silently falling through to lower-priority defaults. YAML validation gracefully skips when PyYAML isn't installed.
+
+### G5: cross-skill routing table cleanup
+
+`skill-debate` removed cannibalizing examples (`/debate Review the auth flow in src/auth.ts` was actively confusing). Added explicit routing table covering 7 commands: debate / review / critique / argument-strength / defensibility / debug / security.
+
+### G6: argument-hint frontmatter on new commands
+
+`.claude/commands/{defensibility,argument-strength,critique}.md` now declare flag grammar in `argument-hint` frontmatter. Matches `/octo:review`'s pattern. (Inconsistent flag ordering between POSIX-first and target-first across new commands is a known wart — GH #10.)
+
+### Misc dogfood fixes (10 items from `/octo:critique` on this patch)
+
+- Autonomous mode trigger phrases tightened — no longer activates on bare "do it" / "proceed" (codex F6)
+- Destructive-action exemption list expanded — covers infra destruction, secret rotation, public publishes (codex F7)
+- Debate routing table fixed: `/octo:defensibility-pass` → `/octo:defensibility` (codex F8)
+- Profile install hint everywhere updated to point at canonical path (gemini F4)
+- `/octo:provider status` distinguishes BLOCKED-by-allowlist from disabled (already in PR 2; reverified)
+- Routing table extended to include `/octo:debug` and `/octo:security` (gemini F2)
+- Model-resolver helper-sourcing prefers BASH_SOURCE over installed path (codex F1)
+- Profile YAML validation no longer requires PyYAML (codex F4)
+- Defensibility-pass docs updated to match new canonical-first precedence (gemini F4)
+- Skill prose `interface_version` properly preserved on three lib-* skills
+
+### Deferred to GH issues (filed at discovery)
+
+- **#7** F12: `lib-multi-inspect-figure` sends image path as text, not pixels. Needs `probe-single --image` passthrough + per-provider attachment mechanics. Out-of-scope for this patch.
+- **#8** `--resume` identity is label-only; needs input-fingerprint to detect stale outputs.
+- **#9** `interface_version` is dead text; needs runtime enforcement or honest relabeling as semantic-only.
+- **#10** `argument-hint` flag ordering inconsistent (POSIX-first vs target-first); needs a convention decision.
+
+### Upstream PR strategy
+
+Mixed. `skill-autonomous-mode` is a behavioral protocol that maintainers may want to design differently. The deferred-item fixes (F4, C6, G4, G5, G6) are clear improvements that should land cleanly upstream. The misc dogfood fixes are bug fixes in already-merged code paths.
+
+Worth opening this as **two PRs upstream**:
+- A small one with the bug fixes
+- A discussion-first one for `skill-autonomous-mode` and the architectural-protocol implications
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1525,7 +1596,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 29 patches as mbox
+The `patches/` directory in this fork contains all 30 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

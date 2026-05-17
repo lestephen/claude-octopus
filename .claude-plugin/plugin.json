@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.21",
+  "version": "9.38.0-lestephen.22",
   "description": "Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",
@@ -34,6 +34,7 @@
     "./skills/octopus-security-audit",
     "./skills/octopus-ui-ux-design",
     "./skills/skill-audit",
+    "./skills/skill-autonomous-mode",
     "./skills/skill-claw",
     "./skills/skill-code-review",
     "./skills/skill-content-pipeline",
@@ -125,6 +126,7 @@
     "./.claude/commands/defensibility.md",
     "./.claude/commands/argument-strength.md",
     "./.claude/commands/critique.md",
+    "./.claude/commands/autonomous.md",
     "./.claude/commands/research.md",
     "./.claude/commands/resume.md",
     "./.claude/commands/careful.md",

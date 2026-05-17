@@ -76,16 +76,36 @@ Direct invocation:
 | `doc_path` | The document to gate (markdown source, not a built artifact) |
 | `audience` (optional) | One of `customer`, `supplier`, `regulator`, `counterparty`, `public`. Tunes Pass B/C wording. Default: `customer` |
 | `source_data_dir` (optional) | Directory containing the source data the document's quantitative claims draw from. Required for Pass A to run; if absent, Pass A is reported as `SKIPPED — no source_data_dir`. |
-| `profile_path` (optional) | Path to project profile YAML with `banned_terms`, `internal_codenames`, `audience_rules`. Default search: `~/.config/octopus/profile.yaml`, then look for a registered profile via installed plugins (e.g., `eki-kw/profiles/default.yaml`). If nothing found, Pass C uses a generic prompt and notes the absence. |
+| `profile_path` (optional) | Path to project profile YAML with `banned_terms`, `internal_codenames`, `audience_rules`. Default search via `scripts/lib/load-octo-profile.sh` — see "Profile loading" section below for the canonical location and full search order. If nothing found, the skill returns `BLOCKED-INFRASTRUCTURE` per G3 hardening. |
 
 ## Profile loading
 
-Try in order; first match wins:
+**lestephen.22 (G4 + C1):** Profile loading is now centralized in `scripts/lib/load-octo-profile.sh`. Source the helper and call `octo_load_profile`:
 
-1. `$OCTOPUS_KW_PROFILE` env var if set
+```bash
+source "${HOME}/.claude-octopus/plugin/scripts/lib/load-octo-profile.sh"
+octo_load_profile
+# Now $OCTO_PROFILE_PATH and $OCTO_PROFILE_STATUS are set
+echo "$(octo_profile_status_line)"
+```
+
+`$OCTO_PROFILE_STATUS` is one of:
+- `loaded` — profile found and parses as valid YAML, no placeholders detected
+- `template` — profile found but contains `<PLACEHOLDER` strings (user hasn't filled it in)
+- `malformed` — profile found but doesn't parse
+- `missing` — no profile found in any search path
+
+Search order (first valid match wins, defined in the helper):
+
+1. `$OCTOPUS_KW_PROFILE` env var
 2. `./.octopus/profile.yaml` (project-local)
-3. `~/.config/octopus/profile.yaml` (user-global)
-4. `~/.claude/plugins/cache/*/profiles/default.yaml` (any installed plugin that provides one — e.g., `eki-kw`)
+3. `$HOME/.claude-octopus/config/profile.yaml` (**canonical** user-global)
+4. `$HOME/.config/octopus/profile.yaml` (XDG-style user-global, supported for XDG-preferring users)
+5. Plugin-installed profiles (`~/.claude/plugins/cache/*/eki-kw/profiles/default.yaml`, etc.)
+
+**Canonical recommended location:** `$HOME/.claude-octopus/config/profile.yaml`. This is also the higher-precedence path — a stale XDG profile cannot mask the canonical one.
+
+**Malformed-profile behavior:** if the highest-priority match is malformed (doesn't parse as YAML), the loader STOPS with `OCTO_PROFILE_STATUS=malformed` and `OCTO_PROFILE_PATH` set to the malformed file. It does NOT silently fall through to a lower-priority profile — that would mask a broken active profile and use the wrong rules.
 
 A loaded profile is expected to have this shape (use bare keys you find; missing keys default to empty):
 
@@ -267,7 +287,7 @@ If `BLOCKED`, do not present a recommendation to send. The user should remediate
 | Failure | Skill behavior |
 |---|---|
 | Only Claude available (no Codex, no Gemini) | Refuse with `❌ Defensibility requires multi-LLM diversity. Install codex + gemini CLIs and re-run.` |
-| Profile fails to load AND no fallback found | **Verdict: `BLOCKED-INFRASTRUCTURE`** (lestephen.20 G3: hardened). Surface the missing profile location + the user's setup instruction (`ln -s <yourrepo>/profile.yaml ~/.config/octopus/profile.yaml`). Do NOT proceed with generic prompts — defensibility without project rules is theater. |
+| Profile fails to load AND no fallback found | **Verdict: `BLOCKED-INFRASTRUCTURE`** (lestephen.20 G3: hardened). Surface the missing profile location + the user's setup instruction (`ln -s <yourrepo>/profile.yaml ~/.claude-octopus/config/profile.yaml`). Do NOT proceed with generic prompts — defensibility without project rules is theater. |
 | Document has no quantitative claims | Pass A reports `SKIPPED — no claims`, does not block |
 | `source_data_dir` missing | Pass A reports `SKIPPED — no source_data_dir`, verdict ceiling drops to `BLOCKED-INFRASTRUCTURE` if document had claims |
 

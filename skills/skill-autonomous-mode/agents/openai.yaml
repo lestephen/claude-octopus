@@ -1,0 +1,3 @@
+interface:
+  display_name: "Autonomous Mode"
+  short_description: "Work through a task without halting; file issues for blockers at discovery time"

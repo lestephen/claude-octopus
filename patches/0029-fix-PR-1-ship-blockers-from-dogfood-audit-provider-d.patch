@@ -1,7 +1,7 @@
 From ca0d2bcb8f29b97652e44f52c98f3e94453b0bbb Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 09:33:15 -0700
-Subject: [PATCH 29/29] fix: PR 1 ship-blockers from dogfood audit (provider
+Subject: [PATCH 29/30] fix: PR 1 ship-blockers from dogfood audit (provider
  dispatch guard, debate args, bump-fork atomicity, critique bundle,
  defensibility hardening)
 MIME-Version: 1.0

@@ -2,6 +2,7 @@
 command: argument-strength
 description: "Adversarial prose review — three providers red-team your draft from different angles to find what would land if a hostile reader pushed back"
 skill: skill-argument-strength
+argument-hint: '<draft-path> [--audience internal-skeptic|customer|supplier|regulator|counterparty|expert-peer|public] [--claim "<one-sentence>"]'
 ---
 
 # Argument Strength

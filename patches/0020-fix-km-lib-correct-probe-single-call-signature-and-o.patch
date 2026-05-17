@@ -1,7 +1,7 @@
 From 30297dbeea3adc124d326e04ac0bc38dd255ec7e Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 00:57:08 -0700
-Subject: [PATCH 20/29] fix(km-lib): correct probe-single call signature and
+Subject: [PATCH 20/30] fix(km-lib): correct probe-single call signature and
  output file pattern in library skills
 
 The three library skills introduced in the previous commit (Patch #19)

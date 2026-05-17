@@ -142,29 +142,53 @@ resolve_octopus_model() {
                         resolved_model=$(resolve_octopus_model "$ref_provider" "$ref_type" "" "")
                     fi
                 else
-                    # Bare value — could be a model name OR a bare provider name.
-                    # If it matches a known provider, treat it as a provider
-                    # reference (not a literal model name): different provider
-                    # means skip (cross-provider safety), same provider means
-                    # fall through to capability/default resolution.
-                    case "$routed" in
-                        codex|gemini|claude|perplexity|openrouter|qwen|cursor-agent|opencode|copilot|ollama)
-                            if [[ "$routed" != "$provider" ]]; then
-                                [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): SKIP (bare '$routed' is a different provider than '$provider')" >&2
-                                routed=""
-                            else
-                                # Same provider — clear routed and fall through to
-                                # capability/default resolution rather than using
-                                # the provider name as a literal model name
-                                [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): bare provider '$routed' matches current provider; falling through to capability/default" >&2
-                                routed=""
-                            fi
-                            ;;
-                        *)
-                            # Not a known provider name — treat as a literal model name
-                            resolved_model="$routed"
-                            ;;
-                    esac
+                    # Bare value — could be:
+                    #   (a) a known bare provider name (e.g. "perplexity") — treat as provider ref
+                    #   (b) an agent_type with capability suffix (e.g. "gemini-fast", "claude-opus")
+                    #       — treat as provider:capability reference and recurse
+                    #   (c) a literal model name (e.g. "gpt-5.5", "sonar-pro")
+                    # lestephen.22 (F4): Previously only (a) was handled; (b) fell through to
+                    # (c) and got assigned as a literal model name, handing the wrong provider
+                    # the wrong string.
+                    bare_provider=""
+                    # Source the helper if available. lestephen.22 (critique
+                    # #2 Codex F1): prefer the BASH_SOURCE-relative path so
+                    # the resolver works correctly when run from a repo
+                    # checkout or test harness, not just from the installed
+                    # plugin path. Falls back to the installed path.
+                    if ! declare -f octo_provider_for_agent_type >/dev/null 2>&1; then
+                        _mr_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null)"
+                        if [[ -n "$_mr_self_dir" && -f "$_mr_self_dir/provider-allowlist.sh" ]]; then
+                            # shellcheck disable=SC1091
+                            source "$_mr_self_dir/provider-allowlist.sh" 2>/dev/null
+                        elif [[ -f "${HOME}/.claude-octopus/plugin/scripts/lib/provider-allowlist.sh" ]]; then
+                            # shellcheck disable=SC1091
+                            source "${HOME}/.claude-octopus/plugin/scripts/lib/provider-allowlist.sh" 2>/dev/null
+                        fi
+                        unset _mr_self_dir
+                    fi
+                    if declare -f octo_provider_for_agent_type >/dev/null 2>&1; then
+                        bare_provider="$(octo_provider_for_agent_type "$routed")"
+                    fi
+
+                    if [[ -n "$bare_provider" ]]; then
+                        # (a) or (b) — `routed` is a recognized agent_type
+                        if [[ "$bare_provider" != "$provider" ]]; then
+                            [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): SKIP (bare '$routed' resolves to provider '$bare_provider', different from '$provider')" >&2
+                            routed=""
+                        elif [[ "$routed" == "$provider" ]]; then
+                            # (a) — exact provider match — fall through to capability/default
+                            [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): bare provider '$routed' matches current provider; falling through to capability/default" >&2
+                            routed=""
+                        else
+                            # (b) — agent_type with capability, same provider — recurse
+                            [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): bare agent_type '$routed' resolves to same provider — recursing" >&2
+                            resolved_model=$(resolve_octopus_model "$provider" "$routed" "" "")
+                        fi
+                    else
+                        # (c) — not a known provider/agent_type; treat as literal model name
+                        resolved_model="$routed"
+                    fi
                 fi
                 if [[ -n "$routed" ]]; then
                     [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): $resolved_model ← SELECTED (route: $routed)" >&2
