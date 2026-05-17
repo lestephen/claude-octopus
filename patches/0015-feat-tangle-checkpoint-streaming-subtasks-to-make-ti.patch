@@ -1,7 +1,7 @@
 From 3a8aa7f6154d332045b3d5d401721a1e872d6f28 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 15:38:58 -0700
-Subject: [PATCH 15/18] feat(tangle): checkpoint-streaming subtasks to make
+Subject: [PATCH 15/19] feat(tangle): checkpoint-streaming subtasks to make
  timeout bound loss, not scope
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

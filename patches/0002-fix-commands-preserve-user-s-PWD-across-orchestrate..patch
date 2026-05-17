@@ -1,7 +1,7 @@
 From fc956504536f1d94ec59070392f64056e0dcdb3b Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 11:56:56 -0700
-Subject: [PATCH 02/18] fix(commands): preserve user's PWD across
+Subject: [PATCH 02/19] fix(commands): preserve user's PWD across
  orchestrate.sh invocations
 
 The embrace/discover/doctor command markdown files instructed Claude

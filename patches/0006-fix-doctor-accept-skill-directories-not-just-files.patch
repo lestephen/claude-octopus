@@ -1,7 +1,7 @@
 From 6d577b1b4523075d4292d5c7ea1cd499e29f9042 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 12:19:26 -0700
-Subject: [PATCH 06/18] fix(doctor): accept skill directories, not just files
+Subject: [PATCH 06/19] fix(doctor): accept skill directories, not just files
 
 Skills are directories containing SKILL.md, but doctor_check_skills
 tested with [[ ! -f "$resolved" ]] which failed for every skill,

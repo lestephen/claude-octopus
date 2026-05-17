@@ -130,11 +130,14 @@ For each available provider in `providers`:
 OUTPUT_DIR="${output_dir:-$HOME/.claude-octopus/results/lib-recompute/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUTPUT_DIR"
 
+# Important: probe-single's $2 (the "perspective" arg) IS the prompt the model
+# receives. $4 (original_prompt) is metadata only.
+TASK_ID="lib-recompute-$(date +%s)-<provider>"
 "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe-single \
   "<provider>" \
-  "recompute" \
-  "lib-recompute-$(date +%s)-<provider>" \
   "$RECOMPUTE_PROMPT" \
+  "$TASK_ID" \
+  "recompute: $(echo "$claim" | head -c 80)" \
   --output-dir "$OUTPUT_DIR" &
 ```
 
@@ -142,7 +145,10 @@ After spawning, `wait`.
 
 ### STEP 5: Validation gate (MANDATORY)
 
-Confirm one output per dispatched provider. If any missing, surface the failure with log path. Partial results require explicit opt-in.
+For each dispatched provider, the expected output file is
+`$OUTPUT_DIR/<provider>-<task_id>.md`. Confirm each is present and
+non-empty. If any missing, surface the failure with log path. Partial
+results require explicit opt-in.
 
 ### STEP 6: Aggregate and compare
 

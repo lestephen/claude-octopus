@@ -96,9 +96,12 @@ If a reviewer's provider is unavailable, skip THAT reviewer and report which wer
 
 For each reviewer in the caller's list whose `agent_type` is available:
 
-1. Generate a unique `task_id`: `lib-review-$(date +%Y%m%d-%H%M%S)-<perspective_label>`
-2. Construct the full prompt: `<reviewer.prompt>\n\n---\n\nDocument under review (path: <doc_path>):\n\n<contents of doc_path>`
-3. Dispatch via `orchestrate.sh probe-single`:
+1. Generate a unique `task_id` (slug-safe, will appear in the output filename): `lib-review-$(date +%Y%m%d-%H%M%S)-<perspective_label_slug>`
+2. Construct the full prompt body: `<reviewer.prompt>\n\n---\n\nDocument under review (path: <doc_path>):\n\n<contents of doc_path>`
+3. Dispatch via `orchestrate.sh probe-single`. **Important call-signature notes (verified against `probe_single_agent` in `scripts/lib/workflows.sh`):**
+   - The PROMPT-the-model-actually-sees is argument `$2` (the "perspective" slot — name is historical; it is the prompt body after persona injection).
+   - Argument `$4` (`original_prompt`) is optional metadata for downstream synthesis context; the model does not receive it. Pass the document/topic summary here if you want; do not put the reviewer's instructions in `$4`.
+   - The output file is written to `${output_dir}/<agent_type>-<task_id>.md`.
 
 ```bash
 OUTPUT_DIR="${output_dir:-$HOME/.claude-octopus/results/lib-multi-review-doc/$(date +%Y%m%d-%H%M%S)}"
@@ -107,9 +110,9 @@ mkdir -p "$OUTPUT_DIR"
 # Per reviewer (run all in parallel using & + wait):
 "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe-single \
   "<reviewer.agent_type>" \
-  "<reviewer.perspective_label>" \
+  "<full_prompt_body>" \
   "<task_id>" \
-  "<full_prompt>" \
+  "review of <doc_path basename>" \
   --output-dir "$OUTPUT_DIR" &
 ```
 
@@ -126,14 +129,17 @@ While reviewers run (or as they complete), surface progress to the user:
 
 ### STEP 4: Validation gate (MANDATORY)
 
-After `wait`, confirm each expected per-reviewer output file exists:
+After `wait`, confirm each expected per-reviewer output file exists. File pattern is `<agent_type>-<task_id>.md` (set by `probe_single_agent` in `scripts/lib/workflows.sh:128`):
 
 ```bash
 FAIL=0
-for label in <perspective_label_1> <perspective_label_2> ...; do
-  FILE=$(find "$OUTPUT_DIR" -name "probe-synthesis-${label}-*.md" -o -name "${label}-*.md" -mmin -15 | head -n1)
-  if [[ -z "$FILE" ]]; then
-    echo "❌ VALIDATION FAILED: no output for reviewer '$label'"
+declare -A TASK_BY_LABEL  # populated when dispatching, keyed by perspective_label
+for label in "${!TASK_BY_LABEL[@]}"; do
+  task_id="${TASK_BY_LABEL[$label]}"
+  agent_type="${AGENT_BY_LABEL[$label]}"
+  FILE="${OUTPUT_DIR}/${agent_type}-${task_id}.md"
+  if [[ ! -s "$FILE" ]]; then
+    echo "❌ VALIDATION FAILED: no output for reviewer '$label' (expected $FILE)"
     FAIL=1
   else
     echo "✅ $label -> $FILE"

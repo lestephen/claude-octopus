@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 19 commits on top of `upstream/main` (currently at
+This fork carries 20 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.11`.
+`v9.38.0-lestephen.12`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -43,7 +43,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 16 | `7cf78b6` | fix  | Tangle: checkpoint counter scans running streams + anchors markers | Bundle with #15 — fixes counter from #15 |
 | 17 | `0f34024` | fix  | Tangle: kill subprocess tree on EXIT/SIGTERM/SIGINT | **Yes — clear bug, independent of #15/#16** |
 | 18 | `706203c` | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
-| 19 | _pending_ | feat  | Knowledge-work Phase 1: skill-defensibility-pass, skill-argument-strength + 3 library skills (multi-review-doc, multi-inspect-figure, independent-recompute) | Plausible — universal multi-LLM skills; discuss adversarial-review framing with maintainer first |
+| 19 | `035d36f` | feat  | Knowledge-work Phase 1: skill-defensibility-pass, skill-argument-strength + 3 library skills (multi-review-doc, multi-inspect-figure, independent-recompute) | Plausible — universal multi-LLM skills; discuss adversarial-review framing with maintainer first |
+| 20 | _pending_ | fix   | Library skills: correct probe-single call signature (prompt is `$2` not `$4`) and output file pattern (`<agent>-<task_id>.md`) | Bundle with #19 — fixes the same code path |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -892,7 +893,7 @@ Tags follow `v<version>` (e.g., `v9.38.0-lestephen.10`).
 
 ## Patch 19 — `feat(km): defensibility-pass + argument-strength skills, with 3 library primitives for multi-LLM dispatch`
 
-**Commit:** _pending_
+**Commit:** `035d36f`
 **Files:** 5 new skill directories under `skills/`, plugin.json registrations, skill-count updates across adapter manifests
 
 ### Background
@@ -982,6 +983,57 @@ what knowledge-work should look like.
 
 ---
 
+## Patch 20 — `fix(km-lib): correct probe-single call signature and output file pattern in library skills`
+
+**Commit:** _pending_
+**Files:** `skills/skill-lib-multi-review-doc/SKILL.md`, `skills/skill-lib-multi-inspect-figure/SKILL.md`, `skills/skill-lib-independent-recompute/SKILL.md`
+
+### Bug
+
+The three library skills introduced in Patch #19 documented the
+`orchestrate.sh probe-single` call signature incorrectly:
+
+1. The reviewer prompt was passed as `$4` (`original_prompt`) — that
+   slot is metadata only; the model never sees it. The actual prompt
+   the model receives is `$2` (the "perspective" slot, named
+   historically — it's the prompt body that goes through
+   `apply_persona`).
+2. The validation gates searched for files matching
+   `probe-synthesis-${label}-*.md` or `${label}-*.md`. The actual file
+   pattern written by `probe_single_agent` at
+   `scripts/lib/workflows.sh:128` is `<agent_type>-<task_id>.md`.
+   Validation gates would have reported `VALIDATION FAILED` for every
+   successful dispatch.
+
+### Discovery
+
+Surfaced live during a 2-provider smoke test against the Patch #19
+library skills. Codex was dispatched with the perspective slot set to
+literally "test-perspective"; the file written was
+`codex-smoke-codex-1779003440.md` (matching the actual pattern) and
+the model received "test-perspective" as its prompt (matching the
+actual perspective-as-prompt semantics).
+
+### Fix
+
+In all three library skill prose files:
+
+- Restructured the dispatch code-block to pass the reviewer prompt in
+  the perspective slot (`$2`), with a note explaining the historical
+  naming.
+- Restructured the validation-gate code-block to compute
+  `${OUTPUT_DIR}/${agent_type}-${task_id}.md` from the dispatch-time
+  state instead of globbing on a wrong pattern.
+- Added inline comments referencing `scripts/lib/workflows.sh:128` so
+  the next maintainer doesn't repeat the misreading.
+
+### Upstream PR strategy
+
+Bundle with Patch #19 — same code path. If Patches #19/20 are pursued
+as an upstream PR, squash these two into a single feature commit.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -999,7 +1051,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 19 patches as mbox
+The `patches/` directory in this fork contains all 20 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

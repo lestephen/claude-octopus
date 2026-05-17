@@ -111,12 +111,15 @@ Image path: $image_path
 EOF
 )
 
-# Per provider:
+# Important: probe-single's $2 (the "perspective" arg) IS the prompt the model
+# receives. $4 (original_prompt) is metadata only. File pattern written by
+# probe_single_agent: <agent_type>-<task_id>.md.
+TASK_ID="lib-inspect-$(date +%s)-<provider>"
 "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" probe-single \
   "<provider>" \
-  "figure-inspect" \
-  "lib-inspect-$(date +%s)-<provider>" \
   "$INSPECTION_PROMPT" \
+  "$TASK_ID" \
+  "figure inspection: $(basename "$image_path")" \
   --output-dir "$OUTPUT_DIR" &
 ```
 
@@ -124,7 +127,11 @@ After spawning, `wait`.
 
 ### STEP 4: Validation gate (MANDATORY)
 
-Confirm one output file per dispatched provider exists in `$OUTPUT_DIR`. If any missing, report the failure and the relevant log path. Partial results require explicit opt-in via a `min_providers` threshold passed by the caller.
+For each dispatched provider, the expected output file is
+`$OUTPUT_DIR/<provider>-<task_id>.md`. Confirm each is present and
+non-empty. If any missing, report the failure and the relevant log path.
+Partial results require explicit opt-in via a `min_providers` threshold
+passed by the caller.
 
 ### STEP 5: Synthesize issue list
 

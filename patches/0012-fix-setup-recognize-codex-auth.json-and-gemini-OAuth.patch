@@ -1,7 +1,7 @@
 From a59f241d01ff8e74a72b4dcd9375377f855968b7 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 14:42:18 -0700
-Subject: [PATCH 12/18] fix(setup): recognize codex auth.json and gemini OAuth
+Subject: [PATCH 12/19] fix(setup): recognize codex auth.json and gemini OAuth
  in check_first_run
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

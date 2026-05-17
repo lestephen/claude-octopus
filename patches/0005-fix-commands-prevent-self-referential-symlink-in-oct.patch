@@ -1,7 +1,7 @@
 From 62d985eaa5a380d6fc2e72e65af3a0dd86f47fb1 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 12:19:20 -0700
-Subject: [PATCH 05/18] fix(commands): prevent self-referential symlink in
+Subject: [PATCH 05/19] fix(commands): prevent self-referential symlink in
  /octo:doctor resolver
 
 The resolver overwrote ~/.claude-octopus/plugin with itself when
