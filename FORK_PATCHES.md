@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 24 commits on top of `upstream/main` (currently at
+This fork carries 25 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.16`.
+`v9.38.0-lestephen.17`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -48,7 +48,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 21 | `965b2d6` | feat  | Slash command shortcuts for new skills (`/defensibility`, `/argument-strength`); command count 48→50 across manifests | Bundle with #19 — surfaces the new skills as first-class commands |
 | 22 | `4bc0a7f` | fix   | Cross-provider safety for bare-provider routing in `resolve_octopus_model` — fixes #1 (codex routed to perplexity via `roles.researcher`) | **Yes — clear bug, completes the v9.17.1 patch** |
 | 23 | `51d2756` | feat  | Provider enable/disable: persistent denylist in `providers.json.disabled[]` (user + project scope) + `OCTO_DISABLED_PROVIDERS` env + `/octo:provider` subcommand + doctor surface | **Yes — additive UX improvement; existing OCTO_ALLOWED_PROVIDERS preserved** |
-| 24 | _pending_ | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
+| 24 | `8975c3b` | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
+| 25 | _pending_ | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1228,7 +1229,7 @@ Plausible upstream PR — the feature is additive, doesn't change defaults, and 
 
 ## Patch 24 — `docs: use /octo:provider as canonical, matching /octo:setup and /octo:doctor convention`
 
-**Commit:** _pending_
+**Commit:** `8975c3b`
 
 **Not for upstream.** Doc-only fix bundled with patch #23.
 
@@ -1243,6 +1244,72 @@ with that convention.
 
 No code change; bare `/provider` continues to work because Claude
 Code's plugin namespacing registers both forms automatically.
+
+---
+
+## Patch 25 — `fix(debate): bash subcommand actually dispatches via grapple_debate; removes dead submodule check`
+
+**Commit:** _pending_
+**Files:** `scripts/orchestrate.sh` (~70 lines, +/-)
+
+### Bug
+
+`bash orchestrate.sh debate "..."` errored with:
+
+```
+ERROR: AI Debate Hub not found. Please initialize the submodule:
+  git submodule update --init --recursive
+AI Debate Hub by wolverin0: https://github.com/wolverin0/claude-skills
+```
+
+despite the fork containing no submodule (`.gitmodules` does not exist; `.dependencies/claude-skills/` does not exist). The submodule was the v7.4 integration with `wolverin0/claude-skills` that has since been superseded by the in-tree `skill-debate/SKILL.md` skill (for the slash command path) and `lib/debate.sh::grapple_debate` (for the bash subcommand path).
+
+The `debate|deliberate|consensus)` case branch in `orchestrate.sh` was never updated when the submodule went away — it kept the submodule guard, kept the `log INFO "🗣️ AI Debate Hub (by wolverin0)"` informational text, and never actually called any debate dispatcher. The branch was effectively dead.
+
+### Discovery
+
+Surfaced in a real `cfd-report-automation` session (2026-05-17): Claude was running a discover/grasp workflow, decided to background-dispatch an adversarial debate against a consensus B+D hybrid, and called `bash orchestrate.sh -t 600 debate "Adversarial stress-test of..."`. The submodule check fired and the debate never ran.
+
+### Fix
+
+Replace the `debate|deliberate|consensus)` case branch with a real dispatcher mirroring the existing `grapple)` branch:
+
+- `source "${SCRIPT_DIR}/lib/debate.sh"` to bring in `grapple_debate`
+- `--help` prints a real usage block
+- No-args errors helpfully and points at `--help`
+- Parse `-r|--rounds`, `--principles`, `--mode` (same surface as `grapple`)
+- `grapple_debate "$@" "$principles" "$rounds" "$debate_mode"` does the actual dispatch
+
+`debate`, `deliberate`, and `consensus` are now functional aliases of `grapple`. The submodule check is gone. Backgrounded debate dispatch from agentic flows works.
+
+### Verification
+
+```
+$ bash scripts/orchestrate.sh debate --help
+# Prints real usage block — no submodule warning
+
+$ bash scripts/orchestrate.sh debate
+ERROR: Missing prompt for debate
+Usage: orchestrate.sh debate [OPTIONS] <prompt>
+Run 'orchestrate.sh debate --help' for full options
+
+$ bash scripts/orchestrate.sh debate "test" 2>&1 | grep -c submodule
+0
+```
+
+The `/octo:debate` slash command path was already working (routes to skill-debate, not the bash subcommand) and is unchanged by this patch.
+
+### Suggested upstream PR title
+
+> `fix(debate): bash subcommand actually dispatches via grapple_debate; removes dead submodule check`
+
+### Suggested upstream PR body
+
+> The `debate`/`deliberate`/`consensus` subcommand in `orchestrate.sh` checked for a non-existent submodule at `.dependencies/claude-skills/` (a v7.4 wolverin0/claude-skills integration that's no longer part of the install) and emitted informational text only — the actual debate ran only via the `/octo:debate` slash command in the foreground.
+>
+> That left `bash orchestrate.sh debate "..."` as a dead path for any agentic workflow that wanted to background a debate. This is a real use case: discover/grasp flows backgrounding adversarial stress-tests of consensus.
+>
+> This PR makes `debate`/`deliberate`/`consensus` a functional alias of `grapple` (which has been the working in-tree multi-LLM debate dispatcher all along), with the same flag surface. The submodule check is removed. The `/octo:debate` slash command path is unchanged.
 
 ---
 
@@ -1263,7 +1330,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 24 patches as mbox
+The `patches/` directory in this fork contains all 25 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

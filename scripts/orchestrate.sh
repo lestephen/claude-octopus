@@ -2820,47 +2820,72 @@ EOF
     # AI DEBATE HUB COMMANDS (v7.4 - Integration with wolverin0/claude-skills)
     # ═══════════════════════════════════════════════════════════════════════════
     debate|deliberate|consensus)
-        # AI Debate Hub - Structured four-way debates
-        # Check if submodule exists
-        if [[ ! -f ".dependencies/claude-skills/skills/debate.md" ]]; then
-            log ERROR "AI Debate Hub not found. Please initialize the submodule:"
-            echo ""
-            echo "  git submodule update --init --recursive"
-            echo ""
-            echo "AI Debate Hub by wolverin0: https://github.com/wolverin0/claude-skills"
+        # Multi-LLM adversarial debate. Dispatches to grapple_debate (the
+        # working in-tree implementation) so this subcommand can be backgrounded
+        # by agentic workflows.
+        #
+        # lestephen.17: Previously this case enforced a submodule check on
+        # `.dependencies/claude-skills/skills/debate.md` (a v7.4 integration
+        # with wolverin0/claude-skills) and emitted informational text only —
+        # the actual debate ran only via the `/octo:debate` slash command in
+        # the foreground. That made `bash orchestrate.sh debate "..."` a dead
+        # path for any agent that wanted to background a debate. Replaced with
+        # a real dispatch to grapple_debate (which `orchestrate.sh grapple`
+        # has been using all along).
+        source "${SCRIPT_DIR}/lib/debate.sh" 2>/dev/null || true
+
+        if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+            cat <<EOF
+Usage: $(basename "$0") debate [OPTIONS] <prompt>
+
+Multi-LLM adversarial debate (Codex vs Gemini, with optional Claude moderation
+and Sonnet pragmatic-implementer perspective). Identical dispatcher as
+'$(basename "$0") grapple'.
+
+Aliases: debate | deliberate | consensus
+
+Options:
+  -r, --rounds N         Number of debate rounds (default: 3)
+  --principles TYPE      Principle set: general | security | performance | maintainability
+  --mode MODE            Debate mode: cross-critique | independent | adversarial | collaborative
+
+Examples:
+  $(basename "$0") debate "redis vs memcached for session store"
+  $(basename "$0") debate -r 5 "monolith vs microservices for the API"
+  $(basename "$0") debate --mode adversarial "the proposed retry policy"
+
+Foreground equivalent (in Claude Code): /octo:debate <prompt>
+EOF
+            exit 0
+        fi
+
+        if [[ $# -lt 1 ]]; then
+            log ERROR "Missing prompt for debate"
+            echo "Usage: $(basename "$0") debate [OPTIONS] <prompt>" >&2
+            echo "Run '$(basename "$0") debate --help' for full options" >&2
             exit 1
         fi
 
-        log INFO "🗣️  AI Debate Hub (by wolverin0)"
-        log INFO "   Enhanced with claude-octopus quality gates and session management"
+        # Parse flags (same surface as grapple)
+        principles="general"
+        rounds=3
+        debate_mode="cross-critique"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --principles) principles="$2"; shift 2 ;;
+                -r|--rounds)  rounds="$2"; shift 2 ;;
+                --mode)       debate_mode="$2"; shift 2 ;;
+                *) break ;;
+            esac
+        done
 
-        # Set integration environment variables
-        export CLAUDE_OCTOPUS_DEBATE_MODE="true"
-        export CLAUDE_CODE_SESSION="${CLAUDE_CODE_SESSION:-}"
+        if ! declare -f grapple_debate >/dev/null 2>&1; then
+            log ERROR "Debate dispatcher (grapple_debate) not available"
+            echo "scripts/lib/debate.sh failed to load. Check the install." >&2
+            exit 2
+        fi
 
-        # The debate.md skill will be automatically loaded by Claude Code
-        # The debate-integration.md skill provides enhancements
-        echo ""
-        echo "📖 AI Debate Hub is active"
-        echo ""
-        echo "Original skill: .dependencies/claude-skills/skills/debate.md"
-        echo "Enhancements: .claude/skills/debate-integration.md"
-        echo "Attribution: AI Debate Hub by wolverin0 (MIT License)"
-        echo ""
-        echo "Usage examples:"
-        echo "  /debate Should we use Redis or in-memory cache?"
-        echo "  /debate -r 3 -d thorough \"Review our API architecture\""
-        echo "  /debate -r 5 -d adversarial \"Security review of auth.ts\""
-        echo ""
-        echo "Debate styles:"
-        echo "  quick (1 round) - Fast initial perspectives"
-        echo "  thorough (3 rounds) - Detailed analysis with refinement"
-        echo "  adversarial (5 rounds) - Devil's advocate, stress testing"
-        echo "  collaborative (2 rounds) - Consensus-building"
-        echo ""
-
-        # Note: The actual debate execution is handled by Claude Code's skill system
-        # This command just provides information and sets up the environment
+        grapple_debate "$@" "$principles" "$rounds" "$debate_mode"
         ;;
     # ═══════════════════════════════════════════════════════════════════════════
     # RALPH-WIGGUM ITERATION COMMANDS (v3.5)
