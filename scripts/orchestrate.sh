@@ -109,6 +109,12 @@ source "${SCRIPT_DIR}/lib/secure.sh" 2>/dev/null || true
 # Provider detection & version checking (v9.7.7 extraction)
 # Strict source (no silencing) for libs critical to core workflows — surfaces syntax errors
 source "${SCRIPT_DIR}/lib/providers.sh"
+# lestephen.20: Source provider-allowlist globally so dispatch guard
+# (octo_provider_dispatch_guard) is available in probe_single_agent and
+# run_agent_sync. Previously this was only sourced inside the `provider`
+# subcommand case branch, leaving the dispatch hot paths unable to enforce
+# disable.
+source "${SCRIPT_DIR}/lib/provider-allowlist.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/preflight.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/dispatch.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/progressive.sh" 2>/dev/null || true
@@ -2553,7 +2559,30 @@ case "$COMMAND" in
             esac
         done
 
-        grapple_debate "$@" "$principles" "$rounds" "$debate_mode"
+        # lestephen.20 (F2): Join remaining args into one prompt string.
+        # Previously: grapple_debate "$@" "$principles" "$rounds" "$debate_mode"
+        # corrupted multi-word prompts — `debate redis vs memcached` became
+        # prompt=redis, principles=vs, rounds=memcached.
+        prompt="$*"
+
+        # lestephen.20 (F3): Validate --mode. Help advertises cross-critique
+        # | independent | adversarial | collaborative; implementation only
+        # recognizes cross-critique and blinded. Normalize aliases; refuse
+        # unimplemented modes.
+        case "$debate_mode" in
+            cross-critique|crosscritique) debate_mode="cross-critique" ;;
+            independent|blinded)          debate_mode="blinded" ;;
+            adversarial|collaborative)
+                log ERROR "--mode '$debate_mode' is not yet implemented. Available: cross-critique | independent"
+                exit 2
+                ;;
+            *)
+                log ERROR "--mode '$debate_mode' is unknown. Available: cross-critique | independent"
+                exit 2
+                ;;
+        esac
+
+        grapple_debate "$prompt" "$principles" "$rounds" "$debate_mode"
         ;;
     squeeze|red-team)
         # Red Team security review: Blue Team defends, Red Team attacks
@@ -2847,7 +2876,7 @@ Aliases: debate | deliberate | consensus
 Options:
   -r, --rounds N         Number of debate rounds (default: 3)
   --principles TYPE      Principle set: general | security | performance | maintainability
-  --mode MODE            Debate mode: cross-critique | independent | adversarial | collaborative
+  --mode MODE            Debate mode: cross-critique (default) | independent (alias: blinded)
 
 Examples:
   $(basename "$0") debate "redis vs memcached for session store"
@@ -2885,7 +2914,25 @@ EOF
             exit 2
         fi
 
-        grapple_debate "$@" "$principles" "$rounds" "$debate_mode"
+        # lestephen.20 (F2): Join remaining args into one prompt string.
+        # Same fix as the grapple branch above.
+        prompt="$*"
+
+        # lestephen.20 (F3): Mode validation — see grapple branch comment.
+        case "$debate_mode" in
+            cross-critique|crosscritique) debate_mode="cross-critique" ;;
+            independent|blinded)          debate_mode="blinded" ;;
+            adversarial|collaborative)
+                log ERROR "--mode '$debate_mode' is not yet implemented. Available: cross-critique | independent"
+                exit 2
+                ;;
+            *)
+                log ERROR "--mode '$debate_mode' is unknown. Available: cross-critique | independent"
+                exit 2
+                ;;
+        esac
+
+        grapple_debate "$prompt" "$principles" "$rounds" "$debate_mode"
         ;;
     # ═══════════════════════════════════════════════════════════════════════════
     # RALPH-WIGGUM ITERATION COMMANDS (v3.5)

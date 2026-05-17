@@ -1,7 +1,7 @@
 From 4bc0a7fb974501b325aadd9bfb7999d2a528acd8 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 07:28:42 -0700
-Subject: [PATCH 22/26] fix(routing): cross-provider safety for bare-provider
+Subject: [PATCH 22/28] fix(routing): cross-provider safety for bare-provider
  routing in resolve_octopus_model
 
 Fixes #1.

@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 27 commits on top of `upstream/main` (currently at
+This fork carries 28 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.19`.
+`v9.38.0-lestephen.20`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -52,6 +52,7 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 25 | `79b3dd9` | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
 | 26 | `2befccf` | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
 | 27 | `229646a` | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
+| 28 | _pending_ | fix   | PR 1 ship-blockers from dogfood audit: F1 dispatch-guard (provider disable now enforced), F2/F3 debate prompt corruption + mode validation, F6/F7/F10/F11 bump-fork + provider-config atomicity / flock / name validation, G2 critique bundle → temp file, G3 defensibility-pass hardening | **Yes — bundle of clear bug fixes** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1389,6 +1390,62 @@ Strong upstream PR candidate. The pattern is borrowed directly from codex's well
 
 ---
 
+## Patch 28 — `fix: PR 1 ship-blockers from dogfood audit (provider dispatch guard, debate args, bump-fork atomicity, critique bundle, defensibility hardening)`
+
+**Commit:** _pending_
+
+Bundle of five ship-blocker fixes surfaced by running `/octo:critique` against the lestephen.10-.19 patch series. The audit (with codex + gemini + claude/host reviewers) found 20+ new issues; this patch ships the HIGH-severity ones.
+
+### F1: `/octo:provider disable` is now enforced on dispatch paths
+
+`scripts/lib/provider-allowlist.sh` (+57 lines), `scripts/lib/workflows.sh` (+12 in `probe_single_agent`), `scripts/lib/agent-sync.sh` (+12 in `run_agent_sync`), `scripts/orchestrate.sh` (+6 — source allowlist globally).
+
+Before: `provider list` correctly showed `copilot: disabled` but the dispatch paths (`probe_single_agent`, `run_agent_sync`) didn't consult `octo_provider_allowed`. The compliance feature lied.
+
+After: new shared helper `octo_provider_dispatch_guard <agent_type>` consults env denylist + project config + user config + OCTO_ALLOWED_PROVIDERS allowlist. Both dispatch entry points call it before model resolution; if blocked, dispatch returns code 2 with a clear log line referencing the disable source. Also exposes `octo_provider_for_agent_type` as a shared helper for the family mapping that was previously duplicated across 4+ files.
+
+### F2 + F3: Debate prompt arg corruption + mode validation
+
+`scripts/orchestrate.sh` — both `debate|deliberate|consensus)` and `grapple)` case branches.
+
+Before: `grapple_debate "$@" "$principles" "$rounds" "$debate_mode"` — multi-word prompts got expanded into separate positional args; `debate redis vs memcached` became `prompt=redis principles=vs rounds=memcached`. Silent argument corruption.
+
+After: `prompt="$*"` captures the remainder; pass as a single string. Plus `--mode` validation: `cross-critique` and `independent` (alias `blinded`) are accepted and normalized; `adversarial` and `collaborative` (advertised in help but not implemented) now error explicitly with the available list. Help text updated to match.
+
+### F6 + F7 + F10 + F11: bump-fork.sh atomicity + provider-config lock + name validation
+
+`scripts/bump-fork.sh` — rewrote `set_version_everywhere` as two-stage (read+plan all targets into tempfiles; if all succeed, atomic-rename each into place; otherwise roll back). Smoke-tested: corrupting `.codex-plugin/plugin.json` mid-flight rolls back all manifests to the prior version instead of leaving mixed state. Plus `flock` around mutating commands (`patch`, `merge-upstream`, `set`) so concurrent invocations can't both compute `N+1` from `N` (lost-increment race).
+
+`scripts/lib/provider-config.sh` — added `_provider_validate_name` (rejects names with whitespace, newlines, semicolons, anything outside `^[a-z0-9][a-z0-9-]{0,31}$`). Added `_provider_config_with_lock` wrapping disable/enable in flock so concurrent runs on different providers can't last-writer-wins one of them away.
+
+### G2: skill-critique writes bundle to temp file before passing to lib
+
+`skills/skill-critique/SKILL.md` STEP 4 + STEP 7. Critique was telling executors to construct an in-memory "bundle" and pass it as `doc_path`, but `lib-multi-review-doc` validates `[[ ! -f "$doc_path" ]]` and would refuse the string. Now writes the bundle to `mktemp` first, passes that path, and cleans up after copying the bundle into the output dir as `scope-bundle.md` for audit trail.
+
+Also fixed in critique, defensibility-pass, argument-strength: the `$OUTPUT_DIR` drift (Gemini F1). The variable is local to library skill bash and not in scope when parent skills try to use it. Parents now extract `$(dirname "$SYNTHESIS_PATH")` from the library skill's returned `SYNTHESIS:` line.
+
+### G3: defensibility-pass hardened — no profile → BLOCKED-INFRASTRUCTURE
+
+`skills/skill-defensibility-pass/SKILL.md` STEP 5 + verdict mapping + Failure modes.
+
+Before: MANDATORY COMPLIANCE forbade "defensible" verdicts without a profile; Step 6 mapping permitted `DEFENSIBLE WITH MINOR EDITS` without one. Contradiction. Behavior was non-deterministic on the highest-stakes skill we ship.
+
+After: hardened. No profile loaded → verdict ceiling `BLOCKED-INFRASTRUCTURE` with a clear setup instruction. Defensibility without project rules is theater; generic Pass C can't enforce EKI's banned terms or audience matrix.
+
+### Verification
+
+- F1 smoke test: `bash orchestrate.sh probe-single copilot ...` now logs `Dispatch blocked: provider 'copilot' is disabled. Source: user (...). Re-enable via: scripts/orchestrate.sh provider enable copilot`
+- F2 smoke test: parsing redis-vs-memcached as args produces `prompt=[redis vs memcached]` not `principles=vs rounds=memcached`
+- F3 smoke test: `--mode adversarial` errors; `--mode independent` normalizes to `blinded`
+- F10 smoke test: corrupting one manifest mid-bump rolls back all others
+- F7 smoke test: `provider_config_disable "codex;rm -rf /"` rejected with validation error
+
+### Upstream PR strategy
+
+Strong upstream PR candidate. All five fixes are clear bugs in the new code path; behavior change is from "broken or non-deterministic" → "correct". F1 (dispatch enforcement) is the most impactful for any user who has tried `OCTO_ALLOWED_PROVIDERS`.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1406,7 +1463,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 27 patches as mbox
+The `patches/` directory in this fork contains all 28 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

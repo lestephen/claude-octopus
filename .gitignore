@@ -119,3 +119,4 @@ coverage-report.html
 *.pem
 .tmp.*
 .claude/settings.local.json
+.bump-fork.lock

@@ -1,0 +1,31 @@
+From 1fbb14b969ddc5dbc2a17dbf1e9a6e04b4334194 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sun, 17 May 2026 08:26:11 -0700
+Subject: [PATCH 28/28] docs: fill in patch 26/27 SHAs in FORK_PATCHES.md index
+
+
+diff --git a/FORK_PATCHES.md b/FORK_PATCHES.md
+index 7b6518f..024e472 100644
+--- a/FORK_PATCHES.md
++++ b/FORK_PATCHES.md
+@@ -51,7 +51,7 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
+ | 24 | `8975c3b` | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
+ | 25 | `79b3dd9` | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
+ | 26 | `2befccf` | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
+-| 27 | _pending_ | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
++| 27 | `229646a` | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
+ 
+ **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
+ obviously correct, no behavior change for end users. #2 and #4 are
+@@ -1357,7 +1357,7 @@ Plausible. The skill mechanics are universal; the angle table is the only opinio
+ 
+ ## Patch 27 — `feat(review): port /codex:review scope flags (--scope, --base, --wait, --background) with size sniffing`
+ 
+-**Commit:** _pending_
++**Commit:** `229646a`
+ **Files:** `.claude/commands/review.md` (+~70 lines of flag parsing + size estimation prose)
+ 
+ ### Background
+-- 
+2.53.0
+

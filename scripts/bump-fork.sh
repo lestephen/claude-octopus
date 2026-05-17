@@ -81,12 +81,17 @@ print(f"{upstream} {n}")
 EOF
 }
 
-# Set the version field on every manifest. Single python call so all
-# files move together or none do.
+# Set the version field on every manifest atomically.
+# lestephen.20 (F10): Two-stage write — build all replacement files in temp
+# locations first; only if every read+mutate succeeds, atomically rename each
+# temp file into place. A crash, jq error, SIGINT, or disk error mid-loop
+# leaves the original files untouched. Previously this rewrote files in
+# sequence; a partial-completion left mixed versions across manifests.
 set_version_everywhere() {
     local new_version="$1"
     python3 - "$new_version" <<'EOF'
-import json, sys, re
+import json, os, sys, tempfile
+
 new = sys.argv[1]
 
 # (path, json-path-or-action). action is one of:
@@ -111,32 +116,60 @@ by_file = defaultdict(list)
 for path, action in targets:
     by_file[path].append(action)
 
-updated = []
-for path, actions in by_file.items():
-    with open(path) as f:
-        data = json.load(f)
-    for action in actions:
-        if action == "top":
-            data["version"] = new
-        elif action == "meta":
-            data.setdefault("metadata", {})["version"] = new
-        elif isinstance(action, tuple) and action[0] == "plugins":
-            name = action[1]
-            for plugin in data.get("plugins", []):
-                if plugin.get("name") == name:
-                    plugin["version"] = new
-                    break
-            else:
-                print(f"WARN: {path}: no plugins[] entry named {name!r}", file=sys.stderr)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-        # Preserve trailing newline if the file had one before
-        f.write("\n" if path.endswith(("marketplace.json", "plugin.json")) and "factory" in path or "codex" in path else "")
-    updated.append(path)
+# ── STAGE 1: read + mutate + write to temp files (no destructive writes yet) ──
+plans = []  # list of (target_path, temp_path)
+try:
+    for path, actions in by_file.items():
+        if not os.path.exists(path):
+            print(f"ERROR: target file missing: {path}", file=sys.stderr)
+            sys.exit(2)
+        with open(path) as f:
+            data = json.load(f)  # raises if malformed → no destructive writes
+        for action in actions:
+            if action == "top":
+                data["version"] = new
+            elif action == "meta":
+                data.setdefault("metadata", {})["version"] = new
+            elif isinstance(action, tuple) and action[0] == "plugins":
+                name = action[1]
+                for plugin in data.get("plugins", []):
+                    if plugin.get("name") == name:
+                        plugin["version"] = new
+                        break
+                else:
+                    print(f"WARN: {path}: no plugins[] entry named {name!r}", file=sys.stderr)
 
-# Dedupe and report
-for p in sorted(set(updated)):
-    print(f"   {p}")
+        # Detect trailing-newline preference from original file
+        with open(path, "rb") as f:
+            had_trailing_newline = f.read().endswith(b"\n")
+
+        # Write to a temp file in the same directory (atomic rename requires same fs)
+        dirpath = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(prefix=".bump-fork.", suffix=".tmp", dir=dirpath)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+                if had_trailing_newline:
+                    f.write("\n")
+            plans.append((path, tmp_path))
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+
+    # ── STAGE 2: atomic rename — only fires if stage 1 succeeded for ALL files
+    for target_path, tmp_path in plans:
+        os.replace(tmp_path, target_path)
+
+    # Report
+    for target_path, _ in plans:
+        print(f"   {target_path}")
+except Exception as e:
+    # Clean up any temps we created before the error
+    for _, tmp_path in plans:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+    print(f"ERROR: rolled back; no files modified. Cause: {e}", file=sys.stderr)
+    sys.exit(2)
 EOF
 }
 
@@ -245,11 +278,41 @@ cmd_merge_upstream() {
     echo "  5. Regen:     rm -f patches/*.patch && git format-patch --no-stat upstream/main..HEAD -o patches/"
 }
 
+# lestephen.20 (F11): Serialize mutating commands with flock so concurrent
+# `bump-fork.sh patch` runs can't both read version=N and both write N+1
+# (lost-increment race). status mode is read-only and does not lock.
+_bump_dispatch() {
+    case "${1:-}" in
+        patch)            cmd_patch ;;
+        merge-upstream)   shift; [[ $# -lt 1 ]] && { echo "ERROR: merge-upstream requires an upstream version" >&2; exit 2; }; cmd_merge_upstream "$1" ;;
+        set)              shift; [[ $# -lt 1 ]] && { echo "ERROR: set requires a version" >&2; exit 2; }; cmd_set "$1" ;;
+        status|"")        cmd_status ;;
+        -h|--help|help)   usage 0 ;;
+        *)                echo "ERROR: unknown mode '$1'" >&2; usage 2 ;;
+    esac
+}
+
 case "${1:-}" in
-    patch)            cmd_patch ;;
-    merge-upstream)   shift; [[ $# -lt 1 ]] && { echo "ERROR: merge-upstream requires an upstream version" >&2; exit 2; }; cmd_merge_upstream "$1" ;;
-    set)              shift; [[ $# -lt 1 ]] && { echo "ERROR: set requires a version" >&2; exit 2; }; cmd_set "$1" ;;
-    status|"")        cmd_status ;;
-    -h|--help|help)   usage 0 ;;
-    *)                echo "ERROR: unknown mode '$1'" >&2; usage 2 ;;
+    patch|merge-upstream|set)
+        # Mutating commands take an exclusive lock at the repo root
+        LOCK_FILE="$PLUGIN_ROOT/.bump-fork.lock"
+        if command -v flock >/dev/null 2>&1; then
+            exec 9>"$LOCK_FILE"
+            if ! flock -n 9; then
+                echo "ERROR: another bump-fork.sh run is in progress (lock: $LOCK_FILE). Wait for it to finish." >&2
+                exit 2
+            fi
+            _bump_dispatch "$@"
+            rc=$?
+            flock -u 9
+            exit $rc
+        else
+            echo "WARN: flock not available; concurrent bump-fork.sh runs may race" >&2
+            _bump_dispatch "$@"
+        fi
+        ;;
+    *)
+        # status / help — read-only, no lock needed
+        _bump_dispatch "$@"
+        ;;
 esac

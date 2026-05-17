@@ -25,6 +25,65 @@ octo_normalize_provider_name() {
     printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | tr -d ','
 }
 
+# Map an agent_type (codex / codex-spark / gemini-fast / claude-opus / ...) to
+# its base provider name. Echoes the canonical provider name, or empty if the
+# agent_type does not match any known provider family.
+octo_provider_for_agent_type() {
+    case "${1:-}" in
+        codex*)        echo codex ;;
+        gemini*)       echo gemini ;;
+        claude*)       echo claude ;;
+        openrouter*)   echo openrouter ;;
+        perplexity*)   echo perplexity ;;
+        cursor-agent*) echo cursor-agent ;;
+        opencode*)     echo opencode ;;
+        copilot*)      echo copilot ;;
+        qwen*)         echo qwen ;;
+        ollama*)       echo ollama ;;
+        *)             echo "" ;;
+    esac
+}
+
+# Pre-dispatch policy gate for any code path that is about to spawn a provider
+# CLI. Returns 0 if OK to dispatch, 1 if blocked by denylist or allowlist.
+# Emits a WARN-level log line via log() when blocked so the user can see why.
+#
+# Wire this into every spawn site BEFORE model resolution: the current
+# implementation enforces /octo:provider disable in two key paths
+# (probe_single_agent in lib/workflows.sh, run_agent_sync in lib/agent-sync.sh).
+# If you add a new spawn entry point, call this first.
+octo_provider_dispatch_guard() {
+    local agent_type="${1:-}"
+    [[ -z "$agent_type" ]] && return 0
+
+    local provider
+    provider="$(octo_provider_for_agent_type "$agent_type")"
+    # Unknown agent_type family — don't second-guess; let existing checks handle
+    [[ -z "$provider" ]] && return 0
+
+    if octo_provider_disabled "$provider"; then
+        local src
+        src="$(octo_provider_disabled_source "$provider" 2>/dev/null)"
+        if declare -f log >/dev/null 2>&1; then
+            log WARN "Dispatch blocked: provider '$provider' (agent_type=$agent_type) is disabled. Source: ${src:-unknown}. Re-enable via: scripts/orchestrate.sh provider enable $provider"
+        else
+            echo "WARN: Dispatch blocked: provider '$provider' disabled (source: ${src:-unknown})" >&2
+        fi
+        return 1
+    fi
+
+    # Allowlist semantics: only check when OCTO_ALLOWED_PROVIDERS is set
+    if [[ -n "${OCTO_ALLOWED_PROVIDERS:-}" ]] && ! octo_provider_allowed "$provider"; then
+        if declare -f log >/dev/null 2>&1; then
+            log WARN "Dispatch blocked: provider '$provider' (agent_type=$agent_type) not in OCTO_ALLOWED_PROVIDERS=$OCTO_ALLOWED_PROVIDERS"
+        else
+            echo "WARN: Dispatch blocked: provider '$provider' not in OCTO_ALLOWED_PROVIDERS" >&2
+        fi
+        return 1
+    fi
+    return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────
 # Denylist (new)
 # ─────────────────────────────────────────────────────────────────────

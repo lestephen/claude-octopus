@@ -109,7 +109,9 @@ banned_wording:
   - { pattern: "significantly\\s", reason: "use 'materially' unless statistical test stated" }
 ```
 
-If no profile loads, the skill prints a one-line warning before Pass C and proceeds with generic prompts. Pass C is then strictly less effective; surface this to the user in the synthesis so they know whether to install a profile and re-run.
+**lestephen.20 (G3):** If no profile loads, the skill **refuses to produce a "defensible" verdict** — the verdict ceiling is `BLOCKED-INFRASTRUCTURE` with the reason `"profile not loaded; defensibility requires project-specific banned terms / audience matrix"`. This is hardened to match the MANDATORY COMPLIANCE rule at line 66 ("Declaring the document defensible when the project profile was not loaded" is prohibited).
+
+Defensibility without project rules is theater — generic Pass C cannot enforce EKI's or your project's specific banned terms, internal codenames, or audience tone matrix. Surface the missing profile clearly so the user installs one and re-runs.
 
 ## Steps
 
@@ -204,6 +206,13 @@ Aggregate the three pass verdicts into the overall gate:
 | * | any FAIL | * | **BLOCKED** |
 | * | * | any FAIL | **BLOCKED** |
 | any SKIPPED (other than Pass A with no claims) | * | * | **BLOCKED-INFRASTRUCTURE** |
+| **no profile loaded** | * | * | **BLOCKED-INFRASTRUCTURE** (G3: harden — defensibility requires project profile) |
+
+**lestephen.20 (F1):** `OUTPUT_DIR` for the report below is **the directory returned by the library skills you invoked** (extract `$(dirname "$SYNTHESIS_PATH")` from the `SYNTHESIS:` line each library skill prints). Do NOT reuse the `$OUTPUT_DIR` name from inside the library's bash — it's not in scope here.
+
+```bash
+OUTPUT_DIR=$(dirname "$PASS_B_SYNTHESIS_PATH")  # or any of the pass synthesis paths
+```
 
 Write the synthesis to `$OUTPUT_DIR/defensibility-report.md`:
 
@@ -258,7 +267,7 @@ If `BLOCKED`, do not present a recommendation to send. The user should remediate
 | Failure | Skill behavior |
 |---|---|
 | Only Claude available (no Codex, no Gemini) | Refuse with `❌ Defensibility requires multi-LLM diversity. Install codex + gemini CLIs and re-run.` |
-| Profile fails to load AND no fallback found | Proceed with generic Pass C, mark verdict ceiling at `DEFENSIBLE WITH MINOR EDITS` (cannot achieve full `DEFENSIBLE` without project-specific banned-terms list) |
+| Profile fails to load AND no fallback found | **Verdict: `BLOCKED-INFRASTRUCTURE`** (lestephen.20 G3: hardened). Surface the missing profile location + the user's setup instruction (`ln -s <yourrepo>/profile.yaml ~/.config/octopus/profile.yaml`). Do NOT proceed with generic prompts — defensibility without project rules is theater. |
 | Document has no quantitative claims | Pass A reports `SKIPPED — no claims`, does not block |
 | `source_data_dir` missing | Pass A reports `SKIPPED — no source_data_dir`, verdict ceiling drops to `BLOCKED-INFRASTRUCTURE` if document had claims |
 

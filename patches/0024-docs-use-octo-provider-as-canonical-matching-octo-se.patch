@@ -1,7 +1,7 @@
 From 8975c3ba97576e295d72084dc5bdd3288da632a5 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 07:48:44 -0700
-Subject: [PATCH 24/26] docs: use /octo:provider as canonical, matching
+Subject: [PATCH 24/28] docs: use /octo:provider as canonical, matching
  /octo:setup convention
 
 Patch #23 introduced the new provider slash command but docs referred

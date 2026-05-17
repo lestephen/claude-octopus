@@ -84,6 +84,19 @@ run_agent_sync() {
     local role="${4:-}"   # Optional role override
     local phase="${5:-}"  # Optional phase context
 
+    # lestephen.20: Provider-control gate. Refuse dispatch if the provider
+    # is disabled (env / project / user config) or excluded from
+    # OCTO_ALLOWED_PROVIDERS. Closes the gap where /octo:provider list
+    # said disabled but dispatch still happened.
+    if declare -f octo_provider_dispatch_guard >/dev/null 2>&1; then
+        if ! octo_provider_dispatch_guard "$agent_type"; then
+            type write_agent_status >/dev/null 2>&1 && \
+                write_agent_status "$agent_type" "failed" 0 0 "Provider blocked by policy (disable or allowlist)" 0 "" "${role:-researcher}" || true
+            echo "[Provider blocked: $agent_type is disabled or not in OCTO_ALLOWED_PROVIDERS]"
+            return 2
+        fi
+    fi
+
     # v8.19.0: Dynamic timeout calculation (when caller uses default 120)
     if [[ "$timeout_secs" -eq 120 ]]; then
         local task_type_for_timeout

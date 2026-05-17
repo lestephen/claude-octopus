@@ -22,6 +22,49 @@ _provider_config_path() {
     esac
 }
 
+# lestephen.20 (F7): Validate provider name before writing to JSON.
+# Rejects names with whitespace, newlines, control chars, or characters
+# outside [a-z0-9-]. Returns 0 if valid, 2 with an error message if not.
+_provider_validate_name() {
+    local name="$1"
+    if [[ -z "$name" ]]; then
+        echo "ERROR: provider name required" >&2
+        return 2
+    fi
+    # Lowercase letters/digits + hyphen; must start with alphanumeric;
+    # 1-32 chars (defensive upper bound).
+    if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+        echo "ERROR: invalid provider name '$name'. Must match ^[a-z0-9][a-z0-9-]{0,31}\$ (lowercase alphanumerics + hyphens, max 32 chars)" >&2
+        return 2
+    fi
+    return 0
+}
+
+# lestephen.20 (F6): Run a callback under an exclusive flock on the given
+# config file. Prevents concurrent disable/enable from racing each other
+# and losing one provider. Falls back to no-lock with a WARN if flock is
+# unavailable.
+_provider_config_with_lock() {
+    local path="$1"
+    shift
+    if command -v flock >/dev/null 2>&1; then
+        local lock_file="${path}.lock"
+        mkdir -p "$(dirname "$lock_file")"
+        # Use a dedicated fd. Sub-shell call so locking scope is the callback.
+        (
+            exec 200>"$lock_file"
+            if ! flock -w 10 200; then
+                echo "ERROR: could not acquire lock on $lock_file within 10s; another writer may be stuck" >&2
+                return 2
+            fi
+            "$@"
+        )
+    else
+        echo "WARN: flock not available; concurrent provider-config writes may race" >&2
+        "$@"
+    fi
+}
+
 # Read the current `.disabled[]` list from a scope. Echoes one name
 # per line (lowercased). Returns 0 even if file missing/empty.
 provider_config_disabled() {
@@ -38,7 +81,7 @@ provider_config_disabled() {
 provider_config_disable() {
     local provider="$1"
     local scope="${2:-user}"
-    [[ -n "$provider" ]] || { echo "ERROR: provider name required" >&2; return 2; }
+    _provider_validate_name "$provider" || return 2
     command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required" >&2; return 2; }
 
     local path
@@ -48,12 +91,16 @@ provider_config_disable() {
     # Initialize file if missing
     [[ -f "$path" ]] || echo '{"version":"3.0"}' > "$path"
 
-    # Read current list, append if absent, write back
-    local current new
-    current=$(jq -r '(.disabled // [])' "$path" 2>/dev/null)
-    if [[ -z "$current" || "$current" == "null" ]]; then
-        current="[]"
-    fi
+    # lestephen.20 (F6): All read+modify+write goes under a flock so concurrent
+    # disable/enable on different providers can't read the same old JSON and
+    # last-writer-wins one of them away.
+    _provider_config_with_lock "$path" _provider_config_disable_locked "$provider" "$scope" "$path"
+}
+
+_provider_config_disable_locked() {
+    local provider="$1"
+    local scope="$2"
+    local path="$3"
 
     # Check idempotency
     local already
@@ -63,7 +110,7 @@ provider_config_disable() {
         return 0
     fi
 
-    # Append + write atomically
+    # Append + atomic rename
     local tmp
     tmp=$(mktemp "${path}.XXXXXX")
     jq --arg p "$provider" '.disabled = ((.disabled // []) + [$p | ascii_downcase])' "$path" > "$tmp" \
@@ -75,7 +122,7 @@ provider_config_disable() {
 provider_config_enable() {
     local provider="$1"
     local scope="${2:-user}"
-    [[ -n "$provider" ]] || { echo "ERROR: provider name required" >&2; return 2; }
+    _provider_validate_name "$provider" || return 2
     command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required" >&2; return 2; }
 
     local path
@@ -84,6 +131,15 @@ provider_config_enable() {
         echo "Not currently disabled in $scope scope: $provider (no config file at $path)"
         return 0
     fi
+
+    # lestephen.20 (F6): locked read+modify+write
+    _provider_config_with_lock "$path" _provider_config_enable_locked "$provider" "$scope" "$path"
+}
+
+_provider_config_enable_locked() {
+    local provider="$1"
+    local scope="$2"
+    local path="$3"
 
     local already
     already=$(jq --arg p "$provider" 'any((.disabled // []) | .[]; ascii_downcase == ($p | ascii_downcase))' "$path" 2>/dev/null)

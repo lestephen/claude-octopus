@@ -181,11 +181,17 @@ Then surface:
 
 ### STEP 6: Save outputs
 
-Write a one-page summary alongside the underlying synthesis files:
+**lestephen.20 (F1):** Extract `OUTPUT_DIR` from the library skill's returned `SYNTHESIS:` line; do NOT reuse an `$OUTPUT_DIR` variable from your own bash (the library's `OUTPUT_DIR` is local to its bash blocks and is not in scope here).
+
+```bash
+OUTPUT_DIR=$(dirname "$SYNTHESIS_PATH")  # parse SYNTHESIS_PATH out of the library skill's STDOUT
+```
+
+Then write the page-1 verdict to that directory:
 
 - `$OUTPUT_DIR/argument-strength-report.md` — the page-1 verdict the user reads
-- `$OUTPUT_DIR/synthesis.md` — the library-skill synthesis (objection table)
-- `$OUTPUT_DIR/per-provider/*.md` — raw per-provider red-team output (preserved by the library skill)
+- `$OUTPUT_DIR/synthesis.md` — the library-skill synthesis (objection table; written by the library)
+- `$OUTPUT_DIR/<agent>-<task_id>.md` — raw per-provider red-team output (written by the library)
 
 ## Failure modes
 

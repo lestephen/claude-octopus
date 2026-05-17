@@ -129,9 +129,26 @@ If only 2 providers are available, drop angle 3 and proceed with 2. Mark the syn
 
 ### STEP 4: Dispatch via `skill-lib-multi-review-doc`
 
-Construct a `reviewers` list and a `synthesis_prompt`, then invoke `skill-lib-multi-review-doc`:
+**lestephen.20 (G2):** Construct the scope bundle in memory, then **write it to a temp file** before passing as `doc_path`. The library skill enforces `[[ ! -f "$doc_path" ]]`; passing a raw string fails immediately.
 
-- `doc_path` = a constructed bundle: scope description + extracted content + the detected scope_type label
+```bash
+BUNDLE_PATH=$(mktemp "${TMPDIR:-/tmp}/octo-critique-bundle.XXXXXX.md")
+cat > "$BUNDLE_PATH" <<EOF
+# Critique scope bundle
+
+**Scope type:** ${SCOPE_TYPE}
+**Target:** ${TARGET_DESCRIPTION}
+**Audience:** ${AUDIENCE}
+
+## Extracted content
+
+${EXTRACTED_CONTENT}
+EOF
+```
+
+Then construct the `reviewers` list and `synthesis_prompt`, and invoke `skill-lib-multi-review-doc`:
+
+- `doc_path` = `$BUNDLE_PATH` (the temp file you just wrote)
 - `reviewers`: one entry per angle. Each `prompt` follows this template:
 
   ```
@@ -187,11 +204,28 @@ Cap the page-1 verdict at ~30 lines. The full synthesis is in the file for users
 
 ### STEP 7: Save outputs
 
-Write a one-page summary alongside the library skill's outputs:
+`$OUTPUT_DIR` here is the directory returned by `skill-lib-multi-review-doc` (look for the `SYNTHESIS:` line in its output and use `dirname` of that path). Do NOT invent an `$OUTPUT_DIR` of your own — that variable is set inside the library skill's bash; don't assume it's in scope here.
 
-- `$OUTPUT_DIR/critique-report.md` — the page-1 verdict
-- `$OUTPUT_DIR/synthesis.md` — library skill synthesis (objection table)
-- `$OUTPUT_DIR/per-provider/*.md` — raw per-provider critiques
+Copy the scope bundle alongside the library skill's outputs (so the audit trail includes what was critiqued) and write the one-page summary:
+
+```bash
+OUTPUT_DIR=$(dirname "$SYNTHESIS_PATH")  # from the library skill's SYNTHESIS: line
+cp "$BUNDLE_PATH" "$OUTPUT_DIR/scope-bundle.md"
+# write $OUTPUT_DIR/critique-report.md with the page-1 verdict
+```
+
+Files in `$OUTPUT_DIR`:
+
+- `critique-report.md` — the page-1 verdict (your output)
+- `synthesis.md` — library skill synthesis (objection table)
+- `scope-bundle.md` — the bundle you constructed in STEP 4 (audit trail)
+- `<agent>-<task_id>.md` — raw per-provider critiques (preserved by the library skill)
+
+After copying, the original `$BUNDLE_PATH` temp file can be unlinked:
+
+```bash
+rm -f "$BUNDLE_PATH"
+```
 
 ## Failure modes
 
