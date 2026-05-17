@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 25 commits on top of `upstream/main` (currently at
+This fork carries 27 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.17`.
+`v9.38.0-lestephen.19`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -49,7 +49,9 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 22 | `4bc0a7f` | fix   | Cross-provider safety for bare-provider routing in `resolve_octopus_model` — fixes #1 (codex routed to perplexity via `roles.researcher`) | **Yes — clear bug, completes the v9.17.1 patch** |
 | 23 | `51d2756` | feat  | Provider enable/disable: persistent denylist in `providers.json.disabled[]` (user + project scope) + `OCTO_DISABLED_PROVIDERS` env + `/octo:provider` subcommand + doctor surface | **Yes — additive UX improvement; existing OCTO_ALLOWED_PROVIDERS preserved** |
 | 24 | `8975c3b` | docs  | Use `/octo:provider` as canonical (not bare `/provider`) in command markdown + README + FORK_PATCHES, matching `/octo:setup` and `/octo:doctor` convention | Bundle with #23 — doc-only |
-| 25 | _pending_ | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
+| 25 | `79b3dd9` | fix   | `orchestrate.sh debate` actually dispatches multi-LLM debate via `grapple_debate` instead of erroring on a non-existent submodule — fixes the "AI Debate Hub not found" error backgrounded debate calls hit | **Yes — clear bug fix, removes dead submodule dep** |
+| 26 | _pending_ | feat  | `skill-critique` + `/octo:critique` slash command — adversarial multi-LLM review of arbitrary scope (code, design docs, technology choices, approaches) | Plausible — fills the gap between `/octo:review` (code defects), `/octo:argument-strength` (prose), and `/octo:debate` (N options) |
+| 27 | _pending_ | feat  | `/octo:review` scope flags (`--scope`, `--base`, `--wait`, `--background`) ported from `/codex:review`; size-sniffing + foreground/background recommendation | **Yes — direct port of well-tested codex pattern** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1249,7 +1251,7 @@ Code's plugin namespacing registers both forms automatically.
 
 ## Patch 25 — `fix(debate): bash subcommand actually dispatches via grapple_debate; removes dead submodule check`
 
-**Commit:** _pending_
+**Commit:** `79b3dd9`
 **Files:** `scripts/orchestrate.sh` (~70 lines, +/-)
 
 ### Bug
@@ -1313,6 +1315,80 @@ The `/octo:debate` slash command path was already working (routes to skill-debat
 
 ---
 
+## Patch 26 — `feat(critique): skill-critique + /octo:critique slash command for adversarial multi-LLM review of arbitrary scope`
+
+**Commit:** _pending_
+**Files:** `skills/skill-critique/SKILL.md` (new), `skills/skill-critique/agents/openai.yaml` (new), `.claude/commands/critique.md` (new), `.claude-plugin/plugin.json` (registrations), 6 manifest strings (51→52 commands, 58→59 skills)
+
+### Background
+
+The existing review skills cover specific cases but leave a gap:
+
+- `/octo:review` — code defect / security / perf focused
+- `/octo:argument-strength` — prose-only argument structure
+- `/octo:debate` — picks between N pre-specified options
+- `/octo:defensibility-pass` — external-send hostile-review gate (3 coordinated passes)
+
+Open-ended "I made this choice / built this thing — would a hostile expert tear it apart?" had no home. Users hit it with technology choices, architecture proposals, ADRs, RFCs, and general approaches.
+
+### What's added
+
+`skill-critique` — adversarial multi-LLM review of arbitrary user-specified scope. Uses `skill-lib-multi-review-doc` as the dispatcher; picks adversarial angles per scope type:
+
+| Scope type | Default angles |
+|---|---|
+| `code-change` | Technical correctness, architectural fit, maintainability |
+| `design-doc` | Conceptual coherence, alternatives-rejected, operational failure modes |
+| `technology-choice` | Cost (financial + cognitive + operational), fit + exit cost, alternatives |
+| `approach` | Assumption-challenge, what-if-X-changes, simplest-alternative |
+| `architecture` | Coupling/cohesion, failure modes / blast radius, 2-year evolution path |
+| `decision` | Reversibility / sunk cost, evidence quality, stakeholder impact / dissent |
+| `prose` | Refuse and route to `/octo:argument-strength` (specialized) |
+
+Each provider attacks from one angle; synthesis surfaces objections by severity × confidence (objections raised by 2+ providers carry higher weight than single-provider HIGHs). Output verdicts: `STRONG` / `DEFENSIBLE WITH FIXES` / `LOAD-BEARING WEAKNESSES` / `NEEDS REDESIGN`.
+
+`/octo:critique` slash command shortcut routes to the skill with the standard MANDATORY COMPLIANCE / EXECUTION MECHANISM framing.
+
+### Upstream PR strategy
+
+Plausible. The skill mechanics are universal; the angle table is the only opinionated content. Worth a discussion-first PR — the maintainer may prefer different default angles or a different positioning relative to `/octo:debate` and `/octo:review`.
+
+---
+
+## Patch 27 — `feat(review): port /codex:review scope flags (--scope, --base, --wait, --background) with size sniffing`
+
+**Commit:** _pending_
+**Files:** `.claude/commands/review.md` (+~70 lines of flag parsing + size estimation prose)
+
+### Background
+
+`/octo:review` previously required full interactive Q&A through AskUserQuestion to determine target scope. `/codex:review` solved the same problem with flag-driven scope (`--scope auto|working-tree|branch`, `--base <ref>`, `--wait|--background`) and auto-recommends background execution for large reviews based on size estimation (`git status / git diff --shortstat`).
+
+When a caller (human or agentic flow) already knows what they want to review, the Q&A is friction. When the caller doesn't know, the size estimate + recommendation is more useful than a flat Q&A.
+
+### What's added
+
+Ported the codex pattern to `/octo:review`:
+
+- **Step 0**: parse flags from `$ARGUMENTS` — `--scope`, `--base`, `--wait`, `--background`. Remaining words become focus-area hints.
+- **Step 0.5**: size estimation per scope (`git status --short`, `git diff --shortstat` variants, `gh pr diff --name-only` for PR scope). Then `AskUserQuestion` once with foreground/background recommendation. Skipped if `--wait` or `--background` was supplied.
+- **Step 1**: skip the "What should be reviewed?" question when `--scope` was set. Other questions (focus, provenance, publish) unchanged.
+- **Step 3**: honor `EXEC_MODE` — `run_in_background: true` when background was chosen.
+
+The remaining Q&A surface (focus, provenance, publish) is octopus-specific and richer than codex; it's preserved.
+
+### What this does NOT change
+
+- `skill-code-review` (the underlying skill) is unchanged. The scope is passed through as the existing `target` field in the JSON profile.
+- Existing `/octo:review` invocations without flags continue to work as before — full Q&A.
+- Headless/autonomous mode (`AUTONOMY_MODE=autonomous` or pipeline context) still skips all Q&A and auto-infers, as before.
+
+### Upstream PR strategy
+
+Strong upstream PR candidate. The pattern is borrowed directly from codex's well-tested slash command; it's additive (default behavior unchanged when no flags supplied); the scope flags improve agentic-flow ergonomics (background dispatch is critical for long reviews backgrounded by `/octo:embrace` etc.).
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1330,7 +1406,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 25 patches as mbox
+The `patches/` directory in this fork contains all 27 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

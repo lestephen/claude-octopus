@@ -1,7 +1,7 @@
 From 51d275670bf7bdd985f95e2182e168b9bb7b82d5 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sun, 17 May 2026 07:42:38 -0700
-Subject: [PATCH 23/24] feat(provider): persistent enable/disable controls with
+Subject: [PATCH 23/25] feat(provider): persistent enable/disable controls with
  project + user scope, env override, doctor surface, /provider command
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
