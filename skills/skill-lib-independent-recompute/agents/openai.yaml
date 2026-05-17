@@ -1,0 +1,3 @@
+interface:
+  display_name: "Independent Recompute (library)"
+  short_description: "Library: ask providers to independently recompute a quantitative claim from source data and report deltas"

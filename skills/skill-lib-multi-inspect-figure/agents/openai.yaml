@@ -1,0 +1,3 @@
+interface:
+  display_name: "Multi-LLM Figure Inspect (library)"
+  short_description: "Library: dispatch a rendered figure to multiple vision-capable providers with a rules prompt"

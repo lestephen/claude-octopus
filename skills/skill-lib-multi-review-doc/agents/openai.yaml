@@ -1,0 +1,3 @@
+interface:
+  display_name: "Multi-LLM Doc Review (library)"
+  short_description: "Library: fan a document out to N providers with per-reviewer prompts, then synthesize"

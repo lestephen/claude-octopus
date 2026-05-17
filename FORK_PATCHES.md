@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 18 commits on top of `upstream/main` (currently at
+This fork carries 19 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.10`.
+`v9.38.0-lestephen.11`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -42,7 +42,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 15 | `3a8aa7f` | feat | Tangle: checkpoint-streaming subtasks (bound loss to last checkpoint, not full run) | Yes — substantial but self-contained |
 | 16 | `7cf78b6` | fix  | Tangle: checkpoint counter scans running streams + anchors markers | Bundle with #15 — fixes counter from #15 |
 | 17 | `0f34024` | fix  | Tangle: kill subprocess tree on EXIT/SIGTERM/SIGINT | **Yes — clear bug, independent of #15/#16** |
-| 18 | _pending_ | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
+| 18 | `706203c` | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
+| 19 | _pending_ | feat  | Knowledge-work Phase 1: skill-defensibility-pass, skill-argument-strength + 3 library skills (multi-review-doc, multi-inspect-figure, independent-recompute) | Plausible — universal multi-LLM skills; discuss adversarial-review framing with maintainer first |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -844,7 +845,7 @@ shell fires the trap, `_tangle_cleanup_all` walks the bash → timeout
 
 ## Patch 18 — `chore(fork): encode lestephen suffix in manifest versions; add bump-fork.sh; doctor display`
 
-**Commit:** _pending_
+**Commit:** `706203c`
 
 **Not for upstream.** Fork-only versioning convention.
 
@@ -889,6 +890,98 @@ Tags follow `v<version>` (e.g., `v9.38.0-lestephen.10`).
 
 ---
 
+## Patch 19 — `feat(km): defensibility-pass + argument-strength skills, with 3 library primitives for multi-LLM dispatch`
+
+**Commit:** _pending_
+**Files:** 5 new skill directories under `skills/`, plugin.json registrations, skill-count updates across adapter manifests
+
+### Background
+
+The plugin's existing knowledge-work (`/octo:km`) mode is a context-switch
+flag that swaps in PRD / marketing / UX personas. That shape fits SaaS
+PM work but does not fit engineering-consulting knowledge work, which
+needs adversarial review primitives: independent verification of
+quantitative claims, multi-perspective red-teaming of prose arguments,
+and defensibility gating before external send. This patch ships the
+public-facing portion of a larger plan to make `/octo:km` actually
+useful for that kind of work.
+
+This is the first material expansion of `/octo:km`. The private
+counterpart (the `eki-kw` plugin distributed via private Azure DevOps
+marketplace) will consume the library skills introduced here.
+
+### What's added
+
+Two end-user skills:
+
+- **`skill-defensibility-pass`** — a publish-ready gate for documents
+  going outside the org. Runs three passes via library skills:
+  (A) independent recompute of every quantitative claim using
+  `lib-independent-recompute`, (B) methodology audit via
+  `lib-multi-review-doc` with codex + gemini reviewers, (C) internal-terms
+  scrub + audience-tone lint via deterministic grep + `lib-multi-review-doc`
+  with gemini + claude reviewers. Synthesizes a single pass/fail with
+  what must change before send. Loads optional project profile YAML
+  for banned-terms / internal-codenames / audience-tone rules; falls
+  back to generic prompts when profile is absent.
+
+- **`skill-argument-strength`** — adversarial prose review for drafts.
+  Three providers red-team a draft from different angles (technical
+  attack, structural attack, audience-reception attack). Synthesis
+  surfaces high-confidence objections (raised by 2+ providers) and
+  recommends minimum revisions. This is `/octo:debate` for prose:
+  where `/octo:debate` resolves a decision among collaborators, this
+  skill stress-tests a draft for survival when shared.
+
+Three library skills meant to be invoked from other skills/plugins:
+
+- **`skill-lib-multi-review-doc`** — generic primitive for fanning a
+  document to N providers with per-reviewer prompts and synthesizing.
+  Validation gate enforced. Consumer skills supply the reviewer
+  prompts; this skill handles dispatch + synthesis.
+
+- **`skill-lib-multi-inspect-figure`** — generic primitive for
+  inspecting a rendered figure with multiple vision-capable providers.
+  Skips non-vision providers. Writes inspection-log.jsonl for
+  graduating recurring issue classes into deterministic lint.
+
+- **`skill-lib-independent-recompute`** — generic primitive for
+  recomputing a quantitative claim from source data using one or more
+  providers. Returns a verdict: `CORROBORATED`, `CLAIM MATCHES SOME`,
+  `CLAIM UNSUPPORTED`, or `PROVIDERS DISAGREE`. The last verdict is
+  the most informative for defensibility work — it surfaces
+  methodology ambiguity the document failed to anchor.
+
+### Design choices worth noting
+
+- All five skills follow the existing octopus conventions: codex-host
+  adapter block, MANDATORY COMPLIANCE section, provider check via
+  `skills/blocks/provider-check.md`, visual-indicator banner, validation
+  gate that confirms synthesis files exist before claiming success.
+- The library skills are intentionally lower-level than `/octo:review`
+  or `flow-deliver`. They are meant to be composed by other skills
+  (including third-party plugins). Their input contracts are explicit
+  so consumers can call them without re-implementing the orchestration.
+- `skill-defensibility-pass` and `skill-argument-strength` are
+  fork-additions specifically because they showcase what claude-octopus
+  is for: adversarial multi-provider review surfaces issues that any
+  single model misses. Single-LLM utilities (intake-converter,
+  report-discipline, publication-figures lint without vision-AI) are
+  intentionally OUT of scope here and belong in a separate plugin.
+
+### Upstream PR strategy
+
+Plausible PR candidate, but discuss with maintainer first. The skills
+are universal in their mechanics (no project-specific content) but the
+adversarial-review framing is a notable expansion of the `/octo:km`
+positioning. A maintainer may prefer a different namespace or
+naming convention. The library skills (`lib-*`) are the more
+straightforwardly upstream-mergeable subset; the end-user skills
+(`defensibility-pass`, `argument-strength`) carry more opinion about
+what knowledge-work should look like.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -906,10 +999,19 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 18 patches as mbox
-files numbered in chronological order (patch 18 — the versioning
-commit — is regenerated by `bump-fork.sh patch` after the bump
-commit lands).
+The `patches/` directory in this fork contains all 19 patches as mbox
+files numbered in chronological order. The convention is that each
+new patch is regenerated alongside the *next* fork-docs commit (so
+the patches/ directory always lags HEAD by one commit at most). After
+making a new patch commit, run:
+
+```bash
+rm -f patches/*.patch
+git format-patch --no-stat upstream/main..HEAD -o patches/
+```
+
+Then commit the regenerated `patches/` directory on the next docs
+refresh.
 
 ## Updating this document
 

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Argument Strength"
+  short_description: "Adversarial prose review — three providers red-team your draft to find what would land if a hostile reader pushed back"

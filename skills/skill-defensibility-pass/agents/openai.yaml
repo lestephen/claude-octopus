@@ -1,0 +1,3 @@
+interface:
+  display_name: "Defensibility Pass"
+  short_description: "Hostile-review gate before a document goes external — independent recompute, methodology audit, internal-terms scrub"

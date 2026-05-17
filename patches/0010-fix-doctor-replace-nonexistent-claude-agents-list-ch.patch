@@ -1,7 +1,7 @@
 From 80cf27f4c77c3c0a29f2a639833efac66f92f5c1 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 14:22:09 -0700
-Subject: [PATCH 10/13] fix(doctor): replace nonexistent 'claude agents list'
+Subject: [PATCH 10/18] fix(doctor): replace nonexistent 'claude agents list'
  check with enabledPlugins + plugin validate
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
