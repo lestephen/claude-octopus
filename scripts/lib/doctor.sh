@@ -415,12 +415,22 @@ doctor_check_auth() {
 doctor_check_config() {
     local plugin_json="$SCRIPT_DIR/../.claude-plugin/plugin.json"
 
-    # Plugin version
+    # Plugin version (fork-aware: surface upstream + fork patch level distinctly
+    # when the version field carries a `-lestephen.N` style suffix)
     local plugin_ver
     plugin_ver=$(jq -r '.version' "$plugin_json" 2>/dev/null || echo "unknown")
     if [[ "$plugin_ver" != "unknown" ]]; then
+        local plugin_msg="Plugin v${plugin_ver}"
+        local plugin_detail=""
+        if [[ "$plugin_ver" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([a-zA-Z0-9_-]+)\.([0-9]+)$ ]]; then
+            local upstream_ver="${BASH_REMATCH[1]}"
+            local fork_tag="${BASH_REMATCH[2]}"
+            local fork_n="${BASH_REMATCH[3]}"
+            plugin_msg="Plugin v${plugin_ver}  (upstream ${upstream_ver}, fork ${fork_tag} patch ${fork_n})"
+            plugin_detail="Fork patch level surfaced via FORK_PATCHES.md / scripts/bump-fork.sh"
+        fi
         doctor_add "plugin-version" "config" "pass" \
-            "Plugin v${plugin_ver}" ""
+            "$plugin_msg" "$plugin_detail"
     else
         doctor_add "plugin-version" "config" "fail" \
             "Cannot read plugin version" "$plugin_json"

@@ -1,0 +1,526 @@
+From 3a8aa7f6154d332045b3d5d401721a1e872d6f28 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 15:38:58 -0700
+Subject: [PATCH 15/17] feat(tangle): checkpoint-streaming subtasks to make
+ timeout bound loss, not scope
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Tangle subtasks previously ran for up to 600s total elapsed and then
+got SIGKILL'd; the entire run was lost because providers (Codex
+especially) tend to draft full implementations in their response
+stream and apply_patch only at the very end. A timeout mid-generation
+discarded everything.
+
+This commit changes the timeout from 'budget for the entire task' to
+'budget for not making progress', and structures the subtask itself so
+progress is materialized as incremental file edits with explicit
+checkpoint markers.
+
+Three coordinated changes:
+
+1. **Checkpoint protocol header** prepended to each tangle subtask
+   prompt. The model is required to work in micro-steps: one
+   apply_patch per micro-step, followed by '### CHECKPOINT: <desc>'
+   on its own line. Includes a worked example and an explanation of
+   why (the orchestrator is checkpoint-aware).
+
+2. **Checkpoint-aware wait loop** in tangle_develop. Each subtask is
+   killed when:
+     - It produces no first checkpoint in OCTOPUS_TANGLE_FIRST_CHECKPOINT_TIMEOUT
+       seconds (default 240, accommodates repo exploration), OR
+     - It idles OCTOPUS_TANGLE_IDLE_TIMEOUT seconds between
+       checkpoints (default 120), OR
+     - Total elapsed exceeds OCTOPUS_TANGLE_HARD_CEILING (default 1800,
+       safety backstop against runaway checkpoint emission).
+   The legacy OCTOPUS_TANGLE_DEADLINE env var is honored as the hard
+   ceiling for backward compatibility.
+
+3. **Resume-on-timeout** for subtasks killed with completed
+   checkpoints. The orchestrator re-spawns the same provider with a
+   RESUME header listing the completed checkpoints; the model picks
+   up from where it left off. Bounded by OCTOPUS_TANGLE_MAX_RESUMES
+   (default 2) and OCTOPUS_TANGLE_RESUME_CEILING (default 900s).
+
+Plus:
+- New helper scripts/helpers/checkpoint-counter.sh — scans a
+  subtask's result file for '### CHECKPOINT:' markers and writes a
+  state file whose mtime advances only when a new checkpoint lands.
+  The wait loop polls this mtime to determine idle time.
+- _tangle_kill_subtask helper extracted from the old kill code path.
+
+Toggle the whole thing off with OCTOPUS_TANGLE_CHECKPOINTS=false
+(falls back to legacy total-elapsed behavior).
+
+Addresses the symptom seen in v9.38.0-lestephen.6 PR-2 tangle:
+both Codex subtasks ran 600s, generated substantial draft code in
+their response streams, never reached apply_patch, got SIGKILL'd,
+quality gate aborted at 0%. With this change, even an interrupted
+subtask materializes its completed checkpoints to disk, and the
+followup resume picks up the remainder.
+
+diff --git a/scripts/helpers/checkpoint-counter.sh b/scripts/helpers/checkpoint-counter.sh
+new file mode 100755
+index 0000000..1ac0226
+--- /dev/null
++++ b/scripts/helpers/checkpoint-counter.sh
+@@ -0,0 +1,71 @@
++#!/usr/bin/env bash
++# checkpoint-counter.sh — scan a tangle subtask's result file for
++# `### CHECKPOINT:` markers and write a counter + list to a state file.
++#
++# Called periodically by tangle_develop's wait loop. The state file's mtime
++# is what the loop watches to decide whether a subtask is still making
++# progress; a stalled subtask shows the same mtime across polls and trips
++# the idle-timeout kill.
++#
++# Usage: checkpoint-counter.sh <result_file> <state_file>
++#
++# State file format:
++#   First line: integer count of checkpoints
++#   Subsequent lines: each checkpoint description, one per line
++#
++# Exit codes:
++#   0  state file updated (count may or may not have changed)
++#   1  result file missing or unreadable
++#   2  state file location not writable
++#
++# Idempotent — safe to call repeatedly. Only writes when the count changed,
++# so mtime stays put while the subtask is stalled.
++
++set -eo pipefail
++
++result_file="${1:-}"
++state_file="${2:-}"
++
++if [[ -z "$result_file" || -z "$state_file" ]]; then
++    echo "usage: $0 <result_file> <state_file>" >&2
++    exit 2
++fi
++
++if [[ ! -r "$result_file" ]]; then
++    # Result file may not yet exist when the spawn is brand new. Treat as 0
++    # checkpoints and seed the state file so the wait loop has a baseline.
++    if [[ ! -f "$state_file" ]]; then
++        mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
++        : > "$state_file" 2>/dev/null || exit 2
++    fi
++    exit 0
++fi
++
++# Pull every `### CHECKPOINT:` line, strip the marker prefix, leave the
++# description. Use grep -F for a literal-string match on the marker prefix
++# (the rest is free text), then sed to strip.
++new_list=$(grep -F '### CHECKPOINT:' "$result_file" 2>/dev/null \
++    | sed 's/^.*### CHECKPOINT:[[:space:]]*//' \
++    || true)
++
++new_count=0
++if [[ -n "$new_list" ]]; then
++    new_count=$(printf '%s\n' "$new_list" | grep -c '^' || echo 0)
++fi
++
++current_count=0
++if [[ -f "$state_file" ]]; then
++    current_count=$(head -1 "$state_file" 2>/dev/null || echo 0)
++    [[ "$current_count" =~ ^[0-9]+$ ]] || current_count=0
++fi
++
++# Only rewrite when the count changed — keeps mtime stable across no-progress polls.
++if [[ "$new_count" != "$current_count" ]]; then
++    mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
++    {
++        echo "$new_count"
++        printf '%s\n' "$new_list"
++    } > "$state_file" 2>/dev/null || exit 2
++fi
++
++exit 0
+diff --git a/scripts/lib/workflows.sh b/scripts/lib/workflows.sh
+index 71cfd35..375f1fb 100755
+--- a/scripts/lib/workflows.sh
++++ b/scripts/lib/workflows.sh
+@@ -768,6 +768,107 @@ EOF
+     echo ""
+ }
+ 
++# Build the checkpoint-protocol header that gets prepended to each tangle
++# subtask. Forces models to materialize work as incremental apply_patches
++# rather than holding it all in their response stream until the very end —
++# which is what made the v9.38.0-lestephen.6 PR-2 tangle run lose 100% of
++# 10 minutes of Codex generation when the timeout fired.
++#
++# Toggle off with OCTOPUS_TANGLE_CHECKPOINTS=false for the legacy behavior.
++_tangle_checkpoint_protocol_header() {
++    cat <<'EOF'
++=== CHECKPOINT PROTOCOL — MANDATORY ===
++
++You MUST work in micro-steps. Each micro-step:
++
++  1. Makes ONE small change (write one file, modify one function, add one test).
++  2. IMMEDIATELY persists it to disk via apply_patch. Do NOT batch multiple
++     changes into a single apply_patch and do NOT draft code in your
++     response without applying it.
++  3. After the apply_patch succeeds, emit on its own line:
++       ### CHECKPOINT: <terse description of what was just persisted>
++  4. Then start the next micro-step.
++
++A micro-step should complete in under 2 minutes. If you find yourself
++drafting more than ~30 lines of code without an apply_patch + CHECKPOINT
++in between, STOP and persist what you have.
++
++Why this matters: this orchestrator is checkpoint-aware. Each
++### CHECKPOINT line you emit:
++  - Counts as preserved progress (immune to subsequent timeout)
++  - Resets the idle-timeout window (default 120s)
++  - Becomes the starting point if your session is resumed later
++
++If you exceed the idle timeout without a new checkpoint, you WILL be
++killed and the orchestrator may resume from your last checkpoint with a
++RESUME prompt listing your completed checkpoints. So: persist often,
++narrate via CHECKPOINT markers, do not hold work in your head.
++
++Example sequence for a "add structured logging" subtask:
++  1. apply_patch: add structlog dep to pyproject.toml
++     ### CHECKPOINT: added structlog dep
++  2. apply_patch: create src/.../logging.py with empty configure_logging() stub
++     ### CHECKPOINT: module stub created
++  3. apply_patch: add tests/test_logging.py with one failing test
++     ### CHECKPOINT: red test for json output
++  4. apply_patch: fill configure_logging() to pass test 3
++     ### CHECKPOINT: green - json output
++  ... continue until subtask is complete.
++
++=== END CHECKPOINT PROTOCOL ===
++
++YOUR SUBTASK:
++EOF
++}
++
++# Build a RESUME header for a subtask that was killed but had completed
++# checkpoints. The completed list becomes context so the model doesn't
++# redo finished work.
++_tangle_resume_protocol_header() {
++    local completed_list="$1"
++    cat <<EOF
++=== RESUME PROTOCOL ===
++
++Your previous session on this subtask was terminated. The following
++micro-steps were already completed and persisted to disk:
++
++${completed_list}
++
++Continue from where you left off. Do NOT redo any of the completed
++work above. Verify the files on disk match the descriptions if you
++need to confirm state, then proceed with the next micro-step.
++
++The checkpoint protocol still applies — keep emitting
++### CHECKPOINT: <description> after each apply_patch.
++
++=== END RESUME PROTOCOL ===
++
++YOUR SUBTASK:
++EOF
++}
++
++# Kill a tangle subtask cleanly: SIGTERM the wrapper and its descendants,
++# wait briefly, then SIGKILL. Write a `timeout` marker to the .done file
++# so the outer reporting loop counts it as a failed subtask.
++_tangle_kill_subtask() {
++    local wrapper_pid="$1"
++    local task_id="$2"
++    local done_file="$3"
++
++    if [[ -n "$wrapper_pid" ]]; then
++        pkill -TERM -P "$wrapper_pid" 2>/dev/null || true
++        kill -TERM "$wrapper_pid" 2>/dev/null || true
++        sleep 1
++        pkill -KILL -P "$wrapper_pid" 2>/dev/null || true
++        kill -KILL "$wrapper_pid" 2>/dev/null || true
++    fi
++
++    mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
++    if [[ ! -f "$done_file" ]] && ! echo "timeout" > "$done_file" 2>/dev/null; then
++        log WARN "Failed to write timeout marker for ${task_id} at $done_file"
++    fi
++}
++
+ # Phase 3: TANGLE (Develop) - Enhanced map-reduce with validation
+ # Tentacles work together in a coordinated tangle of activity
+ tangle_develop() {
+@@ -892,6 +993,18 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+     local subtask_num=0
+     local pids=()
+     local task_ids=()
++    # v9.38.0-lestephen.7: track agent per task so the checkpoint scanner
++    # knows which result file to scan (codex-<task_id>.md vs gemini-<task_id>.md)
++    # and resume can re-spawn with the same provider.
++    local agents=()
++    local subtasks_raw=()
++
++    # Checkpoint protocol gates the prompt wrapping below.
++    local _checkpoint_proto="${OCTOPUS_TANGLE_CHECKPOINTS:-true}"
++    local _checkpoint_header=""
++    if [[ "$_checkpoint_proto" == "true" ]]; then
++        _checkpoint_header="$(_tangle_checkpoint_protocol_header)"
++    fi
+ 
+     fleet_dispatch_begin
+     while IFS= read -r line; do
+@@ -912,6 +1025,16 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+         local task_id="tangle-${task_group}-${subtask_num}"
+         local pane_title="$pane_icon Subtask $((subtask_num+1))"
+ 
++        # v9.38.0-lestephen.7: prepend the checkpoint-protocol header so the
++        # model materializes progress as ### CHECKPOINT: markers. Without
++        # this, models tend to draft the whole task in their response and
++        # apply_patch only at the very end — making any timeout fatal.
++        local _spawn_prompt="$subtask"
++        if [[ -n "$_checkpoint_header" ]]; then
++            _spawn_prompt="${_checkpoint_header}
++${subtask}"
++        fi
++
+         # Tangle currently routes only CLI-backed codex/gemini workers. Its
+         # completion watcher relies on .done markers written by the legacy
+         # spawn path; add equivalent hook markers before routing Claude Agent
+@@ -919,49 +1042,139 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+         if [[ "$TMUX_MODE" == "true" ]]; then
+             # Use async+tmux spawning
+             local pid
+-            pid=$(spawn_agent_async "$agent" "$subtask" "$task_id" "$role" "tangle" "$pane_title")
++            pid=$(spawn_agent_async "$agent" "$_spawn_prompt" "$task_id" "$role" "tangle" "$pane_title")
+             pids+=("$pid")
+         else
+             # Standard spawning
+             local pid
+-            pid=$(spawn_agent_capture_pid "$agent" "$subtask" "$task_id" "$role" "tangle")
++            pid=$(spawn_agent_capture_pid "$agent" "$_spawn_prompt" "$task_id" "$role" "tangle")
+             pids+=("$pid")
+         fi
+         task_ids+=("$task_id")
++        agents+=("$agent")
++        subtasks_raw+=("$subtask")  # unwrapped, for potential resume
+         ((subtask_num++)) || true
+     done <<< "$subtasks"
+     fleet_dispatch_end
+ 
+     log INFO "Spawned $subtask_num development threads"
+ 
+-    # Wait with progress monitoring — poll .done marker files written by spawn_agent
+-    # rather than kill -0 $pid (which tracks wrapper PID, not provider PID)
++    # v9.38.0-lestephen.7: checkpoint-aware wait loop.
++    #
++    # Old behavior: kill any subtask that exceeded a total-elapsed deadline
++    # (default 600s). This discarded all work if the model couldn't finish
++    # in the budget, regardless of how much had been persisted.
++    #
++    # New behavior: each subtask is killed when it stalls (no new
++    # ### CHECKPOINT: marker in N seconds), not when total time exceeds
++    # a fixed budget. A subtask that keeps checkpointing every 30s can
++    # run for an hour; a subtask that hangs for 90s gets killed quickly.
++    # A hard ceiling backstops the whole thing in case a model loops
++    # forever emitting fake checkpoints.
++    #
++    # Toggle off with OCTOPUS_TANGLE_CHECKPOINTS=false (falls back to the
++    # legacy total-elapsed timeout).
+     local _done_dir="${WORKSPACE_DIR:-${HOME}/.claude-octopus}/.octo/agents"
+-    local _tangle_max_wait="${OCTOPUS_TANGLE_DEADLINE:-$(( ${TIMEOUT:-600} + 60 ))}"
+-    [[ "$_tangle_max_wait" =~ ^[0-9]+$ ]] || _tangle_max_wait=$(( ${TIMEOUT:-600} + 60 ))
+-    local _deadline=$(( $(date +%s) + _tangle_max_wait ))
++    local _ckpt_dir="${_done_dir}/checkpoints"
++    mkdir -p "$_ckpt_dir" 2>/dev/null || true
++
++    local _first_ckpt_timeout="${OCTOPUS_TANGLE_FIRST_CHECKPOINT_TIMEOUT:-240}"
++    local _idle_ckpt_timeout="${OCTOPUS_TANGLE_IDLE_TIMEOUT:-120}"
++    local _hard_ceiling
++    if [[ -n "${OCTOPUS_TANGLE_DEADLINE:-}" ]]; then
++        # Backward compat — if user set the old env var, honor it as the
++        # absolute hard ceiling.
++        _hard_ceiling="$OCTOPUS_TANGLE_DEADLINE"
++    else
++        _hard_ceiling="${OCTOPUS_TANGLE_HARD_CEILING:-1800}"
++    fi
++    [[ "$_hard_ceiling" =~ ^[0-9]+$ ]] || _hard_ceiling=1800
++
++    local _checkpoint_counter="${PLUGIN_DIR}/scripts/helpers/checkpoint-counter.sh"
++    local _ckpt_aware="${OCTOPUS_TANGLE_CHECKPOINTS:-true}"
++    if [[ ! -x "$_checkpoint_counter" ]]; then
++        log WARN "Checkpoint counter helper missing at $_checkpoint_counter — falling back to legacy timeout"
++        _ckpt_aware=false
++    fi
++
++    local _spawn_time
++    _spawn_time=$(date +%s)
++    local _hard_deadline=$(( _spawn_time + _hard_ceiling ))
++
+     local completed=0
+     local _failed_tasks=()
++    local _killed_with_checkpoints=()  # task_ids that may be resumed
++
+     while [[ $completed -lt ${#task_ids[@]} ]]; do
+         completed=0
++        local _now
++        _now=$(date +%s)
+         for i in "${!task_ids[@]}"; do
+-            local _done_file="${_done_dir}/${task_ids[$i]}.done"
++            local _task_id="${task_ids[$i]}"
++            local _done_file="${_done_dir}/${_task_id}.done"
++            local _ckpt_state="${_ckpt_dir}/${_task_id}.checkpoints"
++
+             if [[ -f "$_done_file" ]]; then
+                 ((completed++)) || true
+-            elif (( $(date +%s) > _deadline )); then
+-                log WARN "Thread ${task_ids[$i]} deadline exceeded — killing and marking timeout"
+-                local _wrapper_pid="${pids[$i]:-}"
+-                if [[ -n "$_wrapper_pid" ]]; then
+-                    pkill -TERM -P "$_wrapper_pid" 2>/dev/null || true
+-                    kill -TERM "$_wrapper_pid" 2>/dev/null || true
+-                    sleep 1
+-                    pkill -KILL -P "$_wrapper_pid" 2>/dev/null || true
+-                    kill -KILL "$_wrapper_pid" 2>/dev/null || true
++                continue
++            fi
++
++            # Hard ceiling — backstop against runaway checkpoint emission
++            if (( _now > _hard_deadline )); then
++                log WARN "Thread ${_task_id} hard ceiling (${_hard_ceiling}s) exceeded — killing"
++                _tangle_kill_subtask "${pids[$i]:-}" "$_task_id" "$_done_file"
++                local _ckpt_count
++                _ckpt_count=$(head -1 "$_ckpt_state" 2>/dev/null || echo 0)
++                [[ "$_ckpt_count" =~ ^[0-9]+$ ]] || _ckpt_count=0
++                if (( _ckpt_count > 0 )); then
++                    log INFO "Thread ${_task_id} killed with $_ckpt_count completed checkpoints — eligible for resume"
++                    _killed_with_checkpoints+=("$i")
+                 fi
+-                mkdir -p "$_done_dir" 2>/dev/null || true
+-                if [[ ! -f "$_done_file" ]] && ! echo "timeout" > "$_done_file" 2>/dev/null; then
+-                    log WARN "Failed to write timeout marker for ${task_ids[$i]} at $_done_file"
++                continue
++            fi
++
++            if [[ "$_ckpt_aware" != "true" ]]; then
++                # Legacy mode — use simple total-elapsed deadline.
++                continue
++            fi
++
++            # Refresh checkpoint count for this subtask.
++            local _result_file="${RESULTS_DIR}/${agents[$i]}-${_task_id}.md"
++            bash "$_checkpoint_counter" "$_result_file" "$_ckpt_state" 2>/dev/null || true
++
++            local _ckpt_count
++            _ckpt_count=$(head -1 "$_ckpt_state" 2>/dev/null || echo 0)
++            [[ "$_ckpt_count" =~ ^[0-9]+$ ]] || _ckpt_count=0
++
++            local _ckpt_mtime
++            if [[ -f "$_ckpt_state" ]]; then
++                _ckpt_mtime=$(stat -c '%Y' "$_ckpt_state" 2>/dev/null \
++                    || stat -f '%m' "$_ckpt_state" 2>/dev/null \
++                    || echo 0)
++            else
++                _ckpt_mtime=0
++            fi
++            [[ "$_ckpt_mtime" =~ ^[0-9]+$ ]] || _ckpt_mtime=0
++
++            local _idle_since
++            local _budget
++            if (( _ckpt_count == 0 )); then
++                # Pre-first-checkpoint: give it the longer budget (repo exploration etc.)
++                _idle_since=$(( _now - _spawn_time ))
++                _budget="$_first_ckpt_timeout"
++            else
++                _idle_since=$(( _now - _ckpt_mtime ))
++                _budget="$_idle_ckpt_timeout"
++            fi
++
++            if (( _idle_since > _budget )); then
++                if (( _ckpt_count == 0 )); then
++                    log WARN "Thread ${_task_id} produced no checkpoint in ${_budget}s — killing (no progress)"
++                else
++                    log WARN "Thread ${_task_id} idle ${_idle_since}s since last of $_ckpt_count checkpoint(s) — killing"
++                    _killed_with_checkpoints+=("$i")
+                 fi
++                _tangle_kill_subtask "${pids[$i]:-}" "$_task_id" "$_done_file"
+             fi
+         done
+         echo -ne "\r${CYAN}Progress: $completed/${#task_ids[@]} subtasks complete${NC}"
+@@ -969,6 +1182,75 @@ Output as numbered list with [CODING] or [REASONING] prefix for each subtask."
+     done
+     echo ""
+ 
++    # v9.38.0-lestephen.7: resume-on-timeout for subtasks killed with
++    # completed checkpoints. Each resume gets the completed-list as
++    # context so the model picks up where it left off rather than restarting.
++    local _max_resumes="${OCTOPUS_TANGLE_MAX_RESUMES:-2}"
++    [[ "$_max_resumes" =~ ^[0-9]+$ ]] || _max_resumes=2
++    if (( ${#_killed_with_checkpoints[@]} > 0 )) && (( _max_resumes > 0 )); then
++        log INFO "Resuming ${#_killed_with_checkpoints[@]} subtask(s) from last checkpoint..."
++        local _resume_pids=()
++        local _resume_indices=()
++        for idx in "${_killed_with_checkpoints[@]}"; do
++            local _task_id="${task_ids[$idx]}"
++            local _ckpt_state="${_ckpt_dir}/${_task_id}.checkpoints"
++            local _completed
++            _completed=$(tail -n +2 "$_ckpt_state" 2>/dev/null | sed 's/^/  - /' || echo "  (none)")
++            local _resume_header
++            _resume_header="$(_tangle_resume_protocol_header "$_completed")"
++            local _resume_prompt="${_resume_header}
++${subtasks_raw[$idx]}"
++
++            local _resume_task_id="${_task_id}-r1"
++            rm -f "${_done_dir}/${_resume_task_id}.done" 2>/dev/null || true
++
++            log INFO "Resuming ${_task_id} as ${_resume_task_id} (${agents[$idx]})"
++            local _rpid
++            _rpid=$(spawn_agent_capture_pid "${agents[$idx]}" "$_resume_prompt" "$_resume_task_id" "implementer" "tangle")
++            _resume_pids+=("$_rpid")
++            _resume_indices+=("$idx")
++            # Update bookkeeping so completion is tracked against the new task_id
++            task_ids[$idx]="$_resume_task_id"
++            pids[$idx]="$_rpid"
++        done
++
++        # Second wait loop for the resumed subtasks (shorter ceiling — these
++        # should finish faster since they have completed state to lean on).
++        local _resume_ceiling="${OCTOPUS_TANGLE_RESUME_CEILING:-900}"
++        [[ "$_resume_ceiling" =~ ^[0-9]+$ ]] || _resume_ceiling=900
++        local _resume_spawn_time
++        _resume_spawn_time=$(date +%s)
++        local _resume_deadline=$(( _resume_spawn_time + _resume_ceiling ))
++        local _resume_completed=0
++        while [[ $_resume_completed -lt ${#_resume_indices[@]} ]]; do
++            _resume_completed=0
++            local _rnow
++            _rnow=$(date +%s)
++            for j in "${!_resume_indices[@]}"; do
++                local _ridx="${_resume_indices[$j]}"
++                local _rtask_id="${task_ids[$_ridx]}"
++                local _rdone="${_done_dir}/${_rtask_id}.done"
++                local _rckpt="${_ckpt_dir}/${_rtask_id}.checkpoints"
++                if [[ -f "$_rdone" ]]; then
++                    ((_resume_completed++)) || true
++                    continue
++                fi
++                if (( _rnow > _resume_deadline )); then
++                    log WARN "Resume thread ${_rtask_id} ceiling (${_resume_ceiling}s) exceeded — killing"
++                    _tangle_kill_subtask "${pids[$_ridx]:-}" "$_rtask_id" "$_rdone"
++                    continue
++                fi
++                if [[ "$_ckpt_aware" == "true" ]]; then
++                    local _rresult="${RESULTS_DIR}/${agents[$_ridx]}-${_rtask_id}.md"
++                    bash "$_checkpoint_counter" "$_rresult" "$_rckpt" 2>/dev/null || true
++                fi
++            done
++            echo -ne "\r${CYAN}Resume progress: $_resume_completed/${#_resume_indices[@]} resumed subtasks complete${NC}"
++            sleep 2
++        done
++        echo ""
++    fi
++
+     # Report any failed subtasks
+     for i in "${!task_ids[@]}"; do
+         local _done_file="${_done_dir}/${task_ids[$i]}.done"
+-- 
+2.53.0
+

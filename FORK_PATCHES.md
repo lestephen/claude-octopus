@@ -1,14 +1,25 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 13 commits on top of `upstream/main` (currently at
+This fork carries 18 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
-branch and released as `v9.38.0-lestephen.N` tags.
+branch and released as `v9.38.0-lestephen.N` tags. Current tag:
+`v9.38.0-lestephen.10`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
 ready-to-paste PR title and body. The `patches/` directory contains
 the same commits as `git format-patch` mbox files so an upstream
 maintainer can `git am patches/000N-*.patch` to apply individually.
+
+## Fork version
+
+Manifest version fields across `package.json`,
+`.claude-plugin/{plugin,marketplace}.json`,
+`.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, and
+`.factory-plugin/{plugin,marketplace}.json` carry the full fork suffix
+(e.g., `9.38.0-lestephen.10`) so installed copies report which patch
+level they are on. Use `scripts/bump-fork.sh patch` to increment
+across all manifests at once; see `scripts/bump-fork.sh --help`.
 
 ## Patch index
 
@@ -27,11 +38,16 @@ maintainer can `git am patches/000N-*.patch` to apply individually.
 | 11 | `eff1cd5` | docs | Update `FORK_PATCHES.md` for v9.38.0-lestephen.5 | No — fork-only documentation |
 | 12 | `a59f241` | fix | Setup: `check_first_run` recognizes codex/gemini alternate auth | **Yes — clear bug, mirrors existing doctor logic** |
 | 13 | `5ab8c3b` | chore | Remove dead `SUPPORTS_AGENTS_CLI` flag | Bundle with #10 — depends on it |
+| 14 | `b623468` | docs | Update `FORK_PATCHES.md` and patches/ for v9.38.0-lestephen.6 | No — fork-only documentation |
+| 15 | `3a8aa7f` | feat | Tangle: checkpoint-streaming subtasks (bound loss to last checkpoint, not full run) | Yes — substantial but self-contained |
+| 16 | `7cf78b6` | fix  | Tangle: checkpoint counter scans running streams + anchors markers | Bundle with #15 — fixes counter from #15 |
+| 17 | `0f34024` | fix  | Tangle: kill subprocess tree on EXIT/SIGTERM/SIGINT | **Yes — clear bug, independent of #15/#16** |
+| 18 | _pending_ | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
 
-**Highest-value upstream PR candidates: #5, #6, #8, #10, #12** — small,
+**Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
 clear bug fixes/enhancements but touch user-visible workflow paths
-so warrant more discussion. #1 and #3 are feature additions and
+so warrant more discussion. #1, #3, and #15 are feature additions and
 should be discussed with the maintainer before opening a PR.
 
 > Note on numbering: the # column matches the order in `patches/`
@@ -653,6 +669,226 @@ removing the consumer.
 
 ---
 
+## Patch 14 — `docs: update FORK_PATCHES.md and patches/ for v9.38.0-lestephen.6`
+
+**Commit:** `b623468`
+
+**Not for upstream.** Documentation refresh for the previous release
+(adds Patches #11–13 sections and regenerates `patches/`).
+
+---
+
+## Patch 15 — `feat(tangle): checkpoint-streaming subtasks to make timeout bound loss, not scope`
+
+**Commit:** `3a8aa7f`
+**Files:** `scripts/helpers/checkpoint-counter.sh` (+71 new), `scripts/lib/workflows.sh` (+302 / -20)
+
+### Bug
+
+Tangle subtasks ran for up to 600s total elapsed and then got
+SIGKILL'd; the entire run was lost because providers (Codex
+especially) tend to draft full implementations in their response
+stream and `apply_patch` only at the very end. A timeout mid-generation
+discarded everything.
+
+Symptom seen in `v9.38.0-lestephen.6` PR-2 tangle: both Codex subtasks
+ran 600s, generated substantial draft code in their response streams,
+never reached `apply_patch`, got SIGKILL'd, quality gate aborted at
+0%.
+
+### Fix
+
+Three coordinated changes that reframe the timeout from "budget for
+the entire task" to "budget for not making progress":
+
+1. **Checkpoint protocol header** prepended to each tangle subtask
+   prompt. The model is required to work in micro-steps: one
+   `apply_patch` per micro-step, followed by `### CHECKPOINT: <desc>`
+   on its own line.
+2. **Checkpoint-aware wait loop** in `tangle_develop`. A subtask is
+   killed on (a) no first checkpoint within
+   `OCTOPUS_TANGLE_FIRST_CHECKPOINT_TIMEOUT` (default 240s), (b) idle
+   between checkpoints exceeding `OCTOPUS_TANGLE_IDLE_TIMEOUT` (default
+   120s), or (c) hard ceiling `OCTOPUS_TANGLE_HARD_CEILING` (default
+   1800s). Legacy `OCTOPUS_TANGLE_DEADLINE` honored as backward-compat
+   hard ceiling.
+3. **Resume-on-timeout** for subtasks killed with completed
+   checkpoints. The orchestrator re-spawns the same provider with a
+   `RESUME` header listing completed checkpoints; the model picks up
+   from where it left off. Bounded by `OCTOPUS_TANGLE_MAX_RESUMES`
+   (default 2) and `OCTOPUS_TANGLE_RESUME_CEILING` (default 900s).
+
+Toggle off with `OCTOPUS_TANGLE_CHECKPOINTS=false` (falls back to
+legacy total-elapsed behavior).
+
+### Upstream PR strategy
+
+Substantial but self-contained: new env-var contract, new helper,
+extended wait loop, optional via toggle. Worth a discussion-first PR
+with the maintainer rather than a drop-in patch.
+
+---
+
+## Patch 16 — `fix(tangle): checkpoint counter scans running streams + anchors markers`
+
+**Commit:** `7cf78b6`
+**Files:** `scripts/helpers/checkpoint-counter.sh` (+43 / -25), `scripts/lib/workflows.sh` (+6 / -5)
+
+### Bug
+
+Two bugs discovered live during `v9.38.0-lestephen.7` PR-2 tangle test,
+both in `checkpoint-counter.sh` introduced by Patch #14:
+
+1. **Wrong scan target.** The counter scanned only
+   `$RESULTS_DIR/$agent-$task_id.md` which is the FINAL assembled
+   output — it doesn't exist until spawn completion. During execution,
+   provider output lives in `.tmp-$task_id.err` (stderr is Codex's
+   main output channel).
+2. **Prompt markers double-counted.** The protocol header that gets
+   prepended to every subtask contains indented example markers like
+   `    ### CHECKPOINT: added structlog dep`. `grep -F` matched anywhere
+   on a line, so every prompt example registered as a 'completed'
+   checkpoint immediately on spawn — wrongly switching the wait loop to
+   the idle (120s) timeout instead of the first-checkpoint (240s)
+   timeout, and later causing resume to inherit phantom completion
+   state.
+
+### Fix
+
+- Counter signature changed from `<result_file> <state_file>` to
+  `<results_dir> <task_id> <state_file>`. Scans all of
+  `.tmp-$task_id.err`, `.tmp-$task_id.out`, `*-$task_id.md`,
+  `.raw-$task_id.out` — sums across whatever exists. Idempotent and
+  safe to call when no files yet exist.
+- `grep -F` → `grep -E '^### CHECKPOINT:'`. Anchored to start of line
+  so the prompt's indented examples (5–7 leading spaces) cannot match.
+  Codex's narrative output emits markers at column 0, so real
+  checkpoints still register correctly.
+- `workflows.sh` updated to pass the new signature in both main and
+  resume wait loops.
+
+Validated against artifacts from the aborted `lestephen.7` PR-2 run:
+the new counter correctly identified 24 real Codex-emitted checkpoints
+across 4 subtasks, none of the prompt examples.
+
+### Upstream PR strategy
+
+Bundle with #15 — fixes the counter introduced there.
+
+---
+
+## Patch 17 — `fix(tangle): kill subprocess tree on EXIT/SIGTERM/SIGINT`
+
+**Commit:** `0f34024`
+**Files:** `scripts/lib/workflows.sh` (+70 / -4)
+
+### Bug
+
+When `TaskStop` or Ctrl-C interrupted `tangle_develop`, the
+`orchestrate.sh` wrapper bash died but its spawned subtree (typically
+4+ levels deep: `spawn_agent` bash → `timeout` → `env` → `node` →
+codex rust binary) orphaned to init and kept running. The orphaned
+codex processes continued modifying files in the project workspace
+until their own internal timeout, racing any subsequent
+`/octo:develop` invocation on the same prompt and corrupting
+working-tree state.
+
+Discovered live during `v9.38.0-lestephen.8` PR-2 validation: after
+`TaskStop` returned 'Successfully stopped task', 6 codex/orchestrate
+processes remained alive for ~45 minutes; one of them introduced a
+UUID-format change in `tests/test_logging.py` that broke its own test
+after the working tree had been verified clean.
+
+### Fix
+
+Three coordinated changes in `workflows.sh`:
+
+1. **`_tangle_kill_tree` helper** — recursive descendant walker.
+   `pkill -P` only kills direct children; this walks via `pgrep -P`
+   to find grandchildren, great-grandchildren, etc. before
+   `SIGKILL`'ing the parent.
+2. **`_tangle_cleanup_all` trap handler** — iterates
+   `_TANGLE_TRACKED_PIDS` and kills each subtree. Idempotent; safe to
+   fire multiple times.
+3. **trap registration in `tangle_develop`** — installs cleanup on
+   `EXIT`, `SIGTERM`, `SIGINT` before the spawn loop; clears it after
+   the wait loop and before `ink_deliver` runs (different cleanup
+   needs). Tracks both initial spawn PIDs and resume PIDs.
+4. **`_tangle_kill_subtask` updated** — uses the new tree-walker
+   instead of just `pkill -P`, so per-subtask kills (idle timeout,
+   hard ceiling) also reach grandchildren.
+
+Validated with a multi-level subshell smoke test: SIGTERM to outer
+shell fires the trap, `_tangle_cleanup_all` walks the bash → timeout
+→ sleep chain, all three levels die before the parent process exits.
+
+### Suggested upstream PR title
+
+> `fix(tangle): kill subprocess tree on EXIT/SIGTERM/SIGINT to prevent orphaned codex processes`
+
+### Suggested upstream PR body
+
+> When `TaskStop` or Ctrl-C interrupts `tangle_develop`, the
+> orchestrate.sh wrapper bash dies but its spawned subtree (spawn_agent
+> bash → `timeout` → `env` → `node` → codex binary) orphans to init and
+> keeps running. Orphaned codex processes then race subsequent develop
+> invocations and corrupt working-tree state.
+>
+> This PR adds `_tangle_kill_tree` (recursive descendant walker via
+> `pgrep -P`) and registers a cleanup trap on `EXIT/SIGTERM/SIGINT` in
+> `tangle_develop` so the entire process tree dies with the parent.
+> `_tangle_kill_subtask` is also updated to use the new walker so
+> per-subtask kills (idle timeout, hard ceiling) reach grandchildren.
+
+---
+
+## Patch 18 — `chore(fork): encode lestephen suffix in manifest versions; add bump-fork.sh; doctor display`
+
+**Commit:** _pending_
+
+**Not for upstream.** Fork-only versioning convention.
+
+### Background
+
+Before this patch, all seven manifest version fields (`package.json`,
+`.claude-plugin/{plugin,marketplace}.json`,
+`.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`,
+`.factory-plugin/{plugin,marketplace}.json`) carried the bare upstream
+version (`9.38.0`) while git tags carried the fork suffix
+(`v9.38.0-lestephen.N`). Installed copies on different machines all
+reported `9.38.0` regardless of patch level, making it impossible to
+tell which fork patches were actually deployed.
+
+### Fix
+
+- All seven manifest `version` fields now carry the fork suffix:
+  `9.38.0-lestephen.10`.
+- Stale `v9.38.0 — ...` and `v9.38.0 - ...` prefixes stripped from
+  description fields; the `version` field is the single source of
+  truth.
+- `prepublishOnly` regex in `package.json` loosened to allow SemVer
+  pre-release suffix:
+  `^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$`.
+- New `scripts/bump-fork.sh` with two modes:
+  - `bump-fork.sh patch` — increments `-lestephen.N → N+1` across all
+    seven manifests.
+  - `bump-fork.sh merge-upstream <X.Y.Z>` — resets to
+    `<X.Y.Z>-lestephen.1` after pulling a new upstream release.
+- `/octo:doctor` and `/octo:setup` surface `Fork version:
+  9.38.0-lestephen.N (upstream: 9.38.0)` so installed copies declare
+  their patch level at a glance.
+
+### Versioning convention
+
+| Trigger | New version |
+|---------|-------------|
+| New fork patch | `<upstream>-lestephen.<N+1>` |
+| Merge upstream release | `<new-upstream>-lestephen.1` |
+
+Tags follow `v<version>` (e.g., `v9.38.0-lestephen.10`).
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -670,8 +906,10 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 8 patches as mbox
-files numbered in chronological order.
+The `patches/` directory in this fork contains all 18 patches as mbox
+files numbered in chronological order (patch 18 — the versioning
+commit — is regenerated by `bump-fork.sh patch` after the bump
+commit lands).
 
 ## Updating this document
 

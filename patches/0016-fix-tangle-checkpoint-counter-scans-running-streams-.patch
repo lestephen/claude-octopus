@@ -1,0 +1,194 @@
+From 7cf78b617a1c56d94a148b373aaf630882aeba25 Mon Sep 17 00:00:00 2001
+From: lestephen <30328443+lestephen@users.noreply.github.com>
+Date: Sat, 16 May 2026 15:47:46 -0700
+Subject: [PATCH 16/17] fix(tangle): checkpoint counter scans running streams +
+ anchors markers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two bugs discovered live during the v9.38.0-lestephen.7 PR-2 tangle
+test, both in checkpoint-counter.sh + its wait-loop caller:
+
+1. **Wrong scan target.** The counter scanned only
+   $RESULTS_DIR/$agent-$task_id.md which is the FINAL assembled output
+   file — it doesn't exist until spawn completion. During execution,
+   provider output lives in .tmp-$task_id.err (stderr is Codex's
+   main output channel). The counter saw nothing during runs and
+   would have used the wrong idle-timeout budget.
+
+2. **Prompt markers double-counted as completed checkpoints.** The
+   protocol header that gets prepended to every subtask contains
+   indented example markers like:
+       ### CHECKPOINT: added structlog dep
+   The grep -F pattern matched anywhere on a line, so every prompt
+   example registered as a 'completed' checkpoint immediately on
+   spawn — wrongly switching the wait loop to the idle (120s)
+   timeout instead of the first-checkpoint (240s) timeout, and
+   later causing resume to inherit phantom completion state.
+
+Fixes:
+
+- Counter signature changed from
+    checkpoint-counter.sh <result_file> <state_file>
+  to
+    checkpoint-counter.sh <results_dir> <task_id> <state_file>
+  Scans all of .tmp-$task_id.err, .tmp-$task_id.out,
+  *-$task_id.md, .raw-$task_id.out — sums across whatever exists.
+  Idempotent and safe to call when no files yet exist.
+
+- grep -F changed to grep -E '^### CHECKPOINT:'. Anchored to start of
+  line so the prompt's indented examples (5-7 leading spaces)
+  cannot match. Codex's narrative output emits markers at column 0,
+  so real checkpoints still register correctly.
+
+- workflows.sh updated to pass the new (results_dir, task_id, state_file)
+  signature both in the main wait loop and in the resume wait loop.
+
+Validated against artifacts from the aborted v9.38.0-lestephen.7 PR-2
+run: the new counter correctly identified 24 real Codex-emitted
+checkpoints across 4 subtasks (subtask 0: 7, subtask 1: 11, subtask 2:
+11 [up from 5 with stale state], subtask 3: 1), all genuine apply_patch
+narrations, none of the prompt examples.
+
+diff --git a/scripts/helpers/checkpoint-counter.sh b/scripts/helpers/checkpoint-counter.sh
+index 1ac0226..a73d357 100755
+--- a/scripts/helpers/checkpoint-counter.sh
++++ b/scripts/helpers/checkpoint-counter.sh
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env bash
+-# checkpoint-counter.sh — scan a tangle subtask's result file for
++# checkpoint-counter.sh — scan a tangle subtask's output streams for
+ # `### CHECKPOINT:` markers and write a counter + list to a state file.
+ #
+ # Called periodically by tangle_develop's wait loop. The state file's mtime
+@@ -7,7 +7,17 @@
+ # progress; a stalled subtask shows the same mtime across polls and trips
+ # the idle-timeout kill.
+ #
+-# Usage: checkpoint-counter.sh <result_file> <state_file>
++# Usage: checkpoint-counter.sh <results_dir> <task_id> <state_file>
++#
++# Scans every file matching the task_id in the results directory:
++#   - <results_dir>/.tmp-<task_id>.err   (provider stderr, populated during run)
++#   - <results_dir>/.tmp-<task_id>.out   (provider stdout, populated during run)
++#   - <results_dir>/*-<task_id>.md       (final assembled output, after spawn finishes)
++#
++# Markers must appear AT THE START OF A LINE (column 0). The protocol
++# header that gets prepended to subtask prompts contains indented example
++# markers; anchoring to `^` prevents them from being miscounted as
++# completed checkpoints.
+ #
+ # State file format:
+ #   First line: integer count of checkpoints
+@@ -15,38 +25,48 @@
+ #
+ # Exit codes:
+ #   0  state file updated (count may or may not have changed)
+-#   1  result file missing or unreadable
+-#   2  state file location not writable
++#   2  state file location not writable or argument missing
+ #
+ # Idempotent — safe to call repeatedly. Only writes when the count changed,
+ # so mtime stays put while the subtask is stalled.
+ 
+ set -eo pipefail
+ 
+-result_file="${1:-}"
+-state_file="${2:-}"
++results_dir="${1:-}"
++task_id="${2:-}"
++state_file="${3:-}"
+ 
+-if [[ -z "$result_file" || -z "$state_file" ]]; then
+-    echo "usage: $0 <result_file> <state_file>" >&2
++if [[ -z "$results_dir" || -z "$task_id" || -z "$state_file" ]]; then
++    echo "usage: $0 <results_dir> <task_id> <state_file>" >&2
+     exit 2
+ fi
+ 
+-if [[ ! -r "$result_file" ]]; then
+-    # Result file may not yet exist when the spawn is brand new. Treat as 0
+-    # checkpoints and seed the state file so the wait loop has a baseline.
+-    if [[ ! -f "$state_file" ]]; then
+-        mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
+-        : > "$state_file" 2>/dev/null || exit 2
+-    fi
+-    exit 0
+-fi
++# Collect candidate files. Globs may not match anything yet (early in
++# spawn) — that's fine, we just count 0.
++shopt -s nullglob
++candidates=(
++    "$results_dir/.tmp-${task_id}.err"
++    "$results_dir/.tmp-${task_id}.out"
++    "$results_dir"/*-"${task_id}".md
++    "$results_dir/.raw-${task_id}.out"
++)
++shopt -u nullglob
+ 
+-# Pull every `### CHECKPOINT:` line, strip the marker prefix, leave the
+-# description. Use grep -F for a literal-string match on the marker prefix
+-# (the rest is free text), then sed to strip.
+-new_list=$(grep -F '### CHECKPOINT:' "$result_file" 2>/dev/null \
+-    | sed 's/^.*### CHECKPOINT:[[:space:]]*//' \
+-    || true)
++# Anchor to start of line. Indented example markers in the protocol header
++# do not match. Codex's narrative output emits markers at column 0.
++new_list=""
++for f in "${candidates[@]}"; do
++    [[ -r "$f" ]] || continue
++    file_matches=$(grep -E '^### CHECKPOINT:' "$f" 2>/dev/null \
++        | sed 's/^### CHECKPOINT:[[:space:]]*//' \
++        || true)
++    if [[ -n "$file_matches" ]]; then
++        if [[ -n "$new_list" ]]; then
++            new_list+=$'\n'
++        fi
++        new_list+="$file_matches"
++    fi
++done
+ 
+ new_count=0
+ if [[ -n "$new_list" ]]; then
+@@ -59,7 +79,7 @@ if [[ -f "$state_file" ]]; then
+     [[ "$current_count" =~ ^[0-9]+$ ]] || current_count=0
+ fi
+ 
+-# Only rewrite when the count changed — keeps mtime stable across no-progress polls.
++# Only rewrite when count changed — keeps mtime stable across no-progress polls.
+ if [[ "$new_count" != "$current_count" ]]; then
+     mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
+     {
+diff --git a/scripts/lib/workflows.sh b/scripts/lib/workflows.sh
+index 375f1fb..f69ed37 100755
+--- a/scripts/lib/workflows.sh
++++ b/scripts/lib/workflows.sh
+@@ -1138,9 +1138,11 @@ ${subtask}"
+                 continue
+             fi
+ 
+-            # Refresh checkpoint count for this subtask.
+-            local _result_file="${RESULTS_DIR}/${agents[$i]}-${_task_id}.md"
+-            bash "$_checkpoint_counter" "$_result_file" "$_ckpt_state" 2>/dev/null || true
++            # Refresh checkpoint count for this subtask. Scan the running
++            # provider streams (.tmp-${task_id}.err is where Codex writes
++            # during execution) — the assembled ${agent}-${task_id}.md
++            # only exists after spawn completion.
++            bash "$_checkpoint_counter" "$RESULTS_DIR" "$_task_id" "$_ckpt_state" 2>/dev/null || true
+ 
+             local _ckpt_count
+             _ckpt_count=$(head -1 "$_ckpt_state" 2>/dev/null || echo 0)
+@@ -1241,8 +1243,7 @@ ${subtasks_raw[$idx]}"
+                     continue
+                 fi
+                 if [[ "$_ckpt_aware" == "true" ]]; then
+-                    local _rresult="${RESULTS_DIR}/${agents[$_ridx]}-${_rtask_id}.md"
+-                    bash "$_checkpoint_counter" "$_rresult" "$_rckpt" 2>/dev/null || true
++                    bash "$_checkpoint_counter" "$RESULTS_DIR" "$_rtask_id" "$_rckpt" 2>/dev/null || true
+                 fi
+             done
+             echo -ne "\r${CYAN}Resume progress: $_resume_completed/${#_resume_indices[@]} resumed subtasks complete${NC}"
+-- 
+2.53.0
+
