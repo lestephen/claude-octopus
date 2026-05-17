@@ -276,6 +276,26 @@ doctor_check_providers() {
                 "No recent provider fallbacks" ""
         fi
     fi
+
+    # lestephen.15: Surface explicitly-disabled providers
+    if [[ -f "$SCRIPT_DIR/lib/provider-allowlist.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR/lib/provider-allowlist.sh" 2>/dev/null || true
+        if declare -f octo_disabled_set >/dev/null 2>&1; then
+            local _disabled
+            _disabled="$(octo_disabled_set 2>/dev/null)"
+            if [[ -n "$_disabled" ]]; then
+                local entry _src
+                while IFS= read -r entry; do
+                    [[ -z "$entry" ]] && continue
+                    _src="$(octo_provider_disabled_source "$entry" 2>/dev/null)"
+                    doctor_add "provider-disabled-${entry}" "providers" "pass" \
+                        "Provider explicitly disabled: $entry" \
+                        "Source: ${_src:-unknown}. Re-enable: scripts/orchestrate.sh provider enable $entry"
+                done <<< "$_disabled"
+            fi
+        fi
+    fi
 }
 
 # --- Category 1b: Optional companions ---

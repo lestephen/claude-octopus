@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.14",
+  "version": "9.38.0-lestephen.15",
   "description": "Agent summaries, prompt-size preflight, research fanout, and Codex-compatible portable skills. Run /octo:setup.",
   "author": {
     "name": "nyldn",
@@ -108,6 +108,7 @@
     "./.claude/commands/quick.md",
     "./.claude/commands/extract.md",
     "./.claude/commands/model-config.md",
+    "./.claude/commands/provider.md",
     "./.claude/commands/deck.md",
     "./.claude/commands/scheduler.md",
     "./.claude/commands/schedule.md",

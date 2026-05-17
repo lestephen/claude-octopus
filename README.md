@@ -25,7 +25,7 @@ Every AI model has blind spots. Claude Octopus puts up to eight of them on every
 
 🔄 **Four-phase methodology, not just tools.** Every task moves through Discover → Define → Develop → Deliver, with quality gates between phases. Other orchestrators give you infrastructure. Octopus gives you the workflows.
 
-🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **50 commands** (slash commands you type), **58 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
+🐙 **32 specialized personas** (role-specific AI agents like security-auditor, backend-architect), **51 commands** (slash commands you type), **58 skills** (reusable workflow modules). Say "audit my API" and the right expert activates. Don't know the command? The smart router figures it out.
 
 🐙 **Works with just Claude. Scales to eight.** Zero providers needed to start. Add them one at a time — each activates automatically when detected.
 
@@ -376,6 +376,30 @@ Reactions track 13 agent lifecycle states: `running` → `pr_open` → `ci_pendi
 ---
 
 ## Providers and What They Cost
+
+### Enable/disable providers
+
+A provider that isn't useful for your work (or one having an outage) can be disabled so Octopus skips it on every dispatch:
+
+```bash
+# List status across all providers
+/provider list
+
+# Persistently disable a provider (writes ~/.claude-octopus/config/providers.json)
+/provider disable copilot
+
+# Project-scoped disable (writes ./.octopus/providers.json — commits with the repo)
+/provider disable qwen --project
+
+# Re-enable
+/provider enable copilot
+
+# Session-only override via env (doesn't touch config files)
+export OCTO_DISABLED_PROVIDERS=gemini      # denylist
+export OCTO_ALLOWED_PROVIDERS=codex,claude  # strict allowlist (anything else treated as unavailable)
+```
+
+Precedence (highest first): env vars → project config → user config. Disabled providers appear in `/octo:doctor --verbose` with their source, so it's clear why they're not being dispatched.
 
 ### Authentication
 

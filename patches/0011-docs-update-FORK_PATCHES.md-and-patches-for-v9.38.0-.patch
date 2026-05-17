@@ -1,7 +1,7 @@
 From eff1cd5e42eac2734e782ef228a7e3ca52fb57cc Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 14:24:52 -0700
-Subject: [PATCH 11/21] docs: update FORK_PATCHES.md and patches/ for
+Subject: [PATCH 11/22] docs: update FORK_PATCHES.md and patches/ for
  v9.38.0-lestephen.5
 
 Adds Patch #10 (the agents-cli replacement) section with bug/repro/fix/PR

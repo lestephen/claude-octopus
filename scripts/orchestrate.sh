@@ -2674,6 +2674,74 @@ case "$COMMAND" in
     detect-providers)
         cmd_detect_providers
         ;;
+    provider)
+        # provider subcommand — manage enable/disable persistent + env state
+        # Usage: provider list
+        #        provider disable <name> [--project]
+        #        provider enable <name> [--project]
+        #        provider status <name>
+        source "$SCRIPT_DIR/lib/provider-allowlist.sh" 2>/dev/null
+        source "$SCRIPT_DIR/lib/provider-config.sh" 2>/dev/null
+        # Note: orchestrate.sh prelude already consumed $1 into $COMMAND
+        # and shifted; $1 is now the first arg AFTER the subcommand name.
+        _prov_subcmd="${1:-list}"
+        shift || true
+        # Parse trailing --project flag (optional, applies to enable/disable)
+        _prov_scope="user"
+        _prov_args=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --project) _prov_scope="project"; shift ;;
+                --user)    _prov_scope="user"; shift ;;
+                *) _prov_args+=("$1"); shift ;;
+            esac
+        done
+        case "$_prov_subcmd" in
+            -h|--help|help)
+                cat <<EOF
+Usage: orchestrate.sh provider <subcommand> [args]
+
+Subcommands:
+  list                              Show all providers, status (available/missing/disabled), and source
+  disable <name> [--project]        Persistently disable a provider. Default scope: user.
+  enable <name> [--project]         Re-enable a previously-disabled provider.
+  status <name>                     Show whether <name> is disabled and where.
+
+Environment overrides (session-scoped, override persistent config):
+  OCTO_ALLOWED_PROVIDERS=a,b,c      Strict allowlist; anything else treated as unavailable.
+  OCTO_DISABLED_PROVIDERS=x,y       Session denylist (in addition to persistent config).
+
+Persistent config locations (precedence: project > user):
+  ./.octopus/providers.json                       — project scope (use --project)
+  ~/.claude-octopus/config/providers.json         — user scope (default)
+EOF
+                exit 0
+                ;;
+            list|"")    provider_config_list ;;
+            disable)
+                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider disable <name> [--project]" >&2; exit 2; }
+                provider_config_disable "${_prov_args[0]}" "$_prov_scope"
+                ;;
+            enable)
+                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider enable <name> [--project]" >&2; exit 2; }
+                provider_config_enable "${_prov_args[0]}" "$_prov_scope"
+                ;;
+            status)
+                [[ ${#_prov_args[@]} -lt 1 ]] && { echo "Usage: provider status <name>" >&2; exit 2; }
+                _p="${_prov_args[0]}"
+                if octo_provider_disabled "$_p"; then
+                    echo "$_p: DISABLED (source: $(octo_provider_disabled_source "$_p"))"
+                else
+                    echo "$_p: not disabled (allowed)"
+                fi
+                ;;
+            *)
+                echo "Unknown provider subcommand: $_prov_subcmd" >&2
+                echo "Try: orchestrate.sh provider --help" >&2
+                exit 2
+                ;;
+        esac
+        ;;
     update-clis)
         cmd_update_clis
         ;;

@@ -1,7 +1,7 @@
 From 0f340246b8338ee93b40e56c193b71d9ba658081 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 16:02:30 -0700
-Subject: [PATCH 17/21] fix(tangle): kill subprocess tree on
+Subject: [PATCH 17/22] fix(tangle): kill subprocess tree on
  EXIT/SIGTERM/SIGINT
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
