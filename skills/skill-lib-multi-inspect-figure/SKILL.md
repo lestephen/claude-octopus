@@ -4,18 +4,19 @@ description: "Library: dispatch a rendered figure to multiple vision-capable pro
 interface_version: 2
 ---
 
-> **Interface version 2** (lestephen.23) — When `--image <path>` is supplied, the library forwards it to `lib-multi-dispatch.sh --image`, which splices the appropriate per-provider image flag into the dispatched subprocess command. Callers from interface_version 1 (which passed the image path as text only) should re-pin to v2 and pass real paths.
+> **Interface version 2** (lestephen.23, corrected in lestephen.24) — When `--image <path>` is supplied, the library forwards it to `lib-multi-dispatch.sh --image`, which (a) appends the absolute path(s) into the dispatched prompt body and (b) splices `-i <file>` into codex commands as belt-and-suspenders. v1 callers passed the image path as inline text only with no structured guarantee; v2 ensures the path is reliably delivered through both channels.
 >
-> ⚠️ **Model vision vs. headless-CLI attachment — they are NOT the same thing.** Gemini Pro/Flash, Claude Sonnet/Opus, and GPT-vision all have full pixel-vision capability *at the model level*. The dispatch-path limitation below is about whether the **subprocess CLI** we shell out to has a documented mechanism to attach image bytes from the command line, not about whether the model can see images:
+> **Headless vision matrix (lestephen.24 retest, after user pushback on v.23's pessimistic claims)**:
 >
-> | Provider | Model has vision? | Headless CLI dispatch attaches pixels? | Notes |
+> | Provider | Model has vision? | Headless CLI sees attached images? | Mechanism |
 > |---|---|---|---|
-> | `codex` family | Yes (GPT-vision) | ✅ Yes — `-i <file>` confirmed end-to-end | Closes GH #7 |
-> | `claude` (`--print` headless) | Yes (Sonnet/Opus vision) | ❌ No — `--print` has no `--image` flag | Vision in Claude reaches the model via host conversation context (Read tool, drag-drop). For subprocess dispatch, use the host Claude or the Anthropic API directly. |
-> | `gemini`/`qwen`/`cursor-agent` headless | Yes (Gemini Pro Vision) | ❌ No — `@file` + `--include-directories` returned 400 in spike testing | Interactive Gemini (paste image) works. Headless attachment may land in a future SDK update. |
-> | `perplexity`/`ollama`/`copilot`/`opencode`/`openrouter` | Varies by routed model | ❌ No documented headless image flag | Some can route to vision models via API directly; not through our subprocess CLI path. |
+> | `codex` family | Yes (GPT-vision) | ✅ Yes | `-i <file>` flag AND path-reference in prompt body (both work; we use both) |
+> | `claude` (`--print` headless) | Yes (Sonnet/Opus vision) | ✅ Yes | Path-reference in prompt body — claude `--print` auto-reads referenced image paths |
+> | `gemini` headless | Yes (Gemini Pro Vision) | ✅ Yes | `@file` AND/OR path-reference in prompt body |
+> | `qwen`/`cursor-agent` (gemini forks) | Yes | ✅ Likely (same dispatch path as gemini) | Path-reference in prompt body |
+> | `copilot`/`perplexity`/`ollama`/`opencode`/`openrouter` | Varies by routed model | Untested in spike — assume same path-reference mechanism, verify before relying | Path-reference in prompt body |
 >
-> For text-degraded providers, the prompt body is prepended with an explicit "you cannot see pixels in this dispatch" warning so the model self-limits to structural critique rather than hallucinating pixel observations.
+> The earlier v.23 banner falsely claimed Claude/Gemini couldn't see images headlessly. Retest in lestephen.24 confirmed all three providers (Codex, Claude --print, Gemini headless) correctly identified test colors (Orange, Purple, Cyan) when the image path was mentioned in the prompt.
 
 > **Host: Codex CLI** — This skill was designed for Claude Code and adapted for Codex.
 > Cross-reference commands use installed skill names in Codex rather than `/octo:*` slash commands.
@@ -50,7 +51,7 @@ This exists because single vision models miss different categories of issues in 
 | `output_dir` (optional) | Where to write per-provider + synthesis files | default: `~/.claude-octopus/results/lib-inspect-figure/<timestamp>/` |
 | `context_doc` (optional) | Path to a doc that gives the figure context (e.g., the report it appears in) — useful for "does this figure support the surrounding claim" checks | |
 
-**Headless image-attachment via this dispatch path** (lestephen.23): only **`codex`** is confirmed (`-i` flag end-to-end). All other providers — including Claude and Gemini, whose *models* fully support vision — degrade text-only because their **headless CLI** does not expose a pixel-attachment flag. See the matrix in the version banner above for the model-vs-CLI distinction.
+**Headless vision** (lestephen.24): `codex`, `claude --print`, and `gemini` headless ALL see images attached via this dispatch path. The universal mechanism is path-reference in the prompt body; codex additionally gets `-i` belt-and-suspenders. See the matrix in the version banner above for tested-vs-assumed status per provider.
 
 ## ⚠️ MANDATORY: Visual Indicators Protocol
 
@@ -61,13 +62,13 @@ Then output the provider banner:
 ```
 🛠️ Library Phase: Multi-LLM figure inspection (interface_version 2)
 
-Pixel attachment status (NOT model-level vision — see SKILL.md matrix):
-🔴 Codex CLI — pixel attachment ✅ (-i flag, confirmed)
-🔵 Claude --print — pixel attachment ❌ (subprocess CLI lacks --image; model itself does have vision)
-🟡 Gemini headless — pixel attachment ❌ (CLI lacks --image; model itself does have vision)
+Vision providers (lestephen.24 — all three see attached image bytes):
+🔴 Codex CLI — vision ✅ (-i flag + path in prompt)
+🔵 Claude --print — vision ✅ (path-reference in prompt, auto-loaded)
+🟡 Gemini headless — vision ✅ (@file / path-reference in prompt)
 ```
 
-Mark each provider's *dispatch-path* status explicitly. Text-degraded providers still produce useful structural critique (their prompt is prepended with an explicit "you cannot see pixels" warning so they self-limit). Be clear with the caller: a "text-degraded gemini didn't find issues" is NOT evidence the figure is fine.
+Running multiple vision providers in parallel is the entire point — each catches different categories of issue.
 
 ## ⚠️ MANDATORY COMPLIANCE — DO NOT SKIP
 
@@ -86,7 +87,7 @@ If zero vision providers are available, refuse: print the failure and exit non-z
 
 @skills/blocks/provider-check.md
 
-Then filter to vision-capable providers. **Under interface_version 2 (lestephen.23) the vision-capability table inverts**: `codex` is the *only* confirmed-vision headless provider (via `-i` flag and `lib-multi-dispatch.sh --image`). Treat `gemini`, `qwen`, `cursor-agent`, `copilot`, `perplexity`, `ollama`, `opencode`, `openrouter` and headless `claude` (`--print`) as **text-degraded** — they accept the dispatch but the model receives only the filename (the prompt is prepended with an explicit "you cannot see pixels" warning, so they won't hallucinate). Always include codex when available; include text-degraded providers only when the rules are dominated by structural critique (axis labels described in caption, etc.) rather than pixel inspection.
+Then filter to vision-capable providers. **Under interface_version 2 (lestephen.24 retest)** all three of `codex`, headless `claude` (`--print`), and `gemini` headless have working vision via this dispatch path (universal mechanism: image absolute path in the prompt body, plus codex `-i` flag belt-and-suspenders). Include all three when available — running multiple vision providers in parallel is exactly the point of this library skill. `qwen`/`cursor-agent` likely work (they fork gemini CLI) but are unverified; `copilot`/`perplexity`/`ollama`/`opencode`/`openrouter` are unverified, treat findings from them as advisory until you spot-check.
 
 ### STEP 2: Validate inputs
 

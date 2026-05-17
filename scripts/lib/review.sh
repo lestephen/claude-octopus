@@ -515,24 +515,29 @@ review_run() {
             *.pdf)                                  _ref_kind="PDF spec" ;;
             *.md|*.txt|*.rst)                       _ref_kind="text spec" ;;
         esac
-        reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.23):
+        reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.24):
 The reference ${_ref_kind} for this work is: ${reference}
   (basename: ${_ref_basename}, size: ${_ref_size} bytes)
 
 REQUIRED BEHAVIOR — apply BEFORE evaluating code-internal consistency:
-1. Acknowledge whether you can actually inspect this reference. The headless
-   review fleet typically CANNOT see image pixels — say so explicitly if true.
+1. Open and inspect the reference. Headless CLIs in this dispatch path
+   (codex / claude --print / gemini) can all read referenced image and
+   PDF paths — use that capability. Confirm in your output that you
+   actually inspected the artifact (e.g. \"I see a chartreuse accent at
+   roughly the top bar\").
 2. For visual-fidelity claims (color tokens, layout constants, typography
-   weights, spacing, iconography): if you cannot inspect pixels, flag any
-   value in the diff that LOOKS like a mockup-derived constant
-   (color hex, magic number, asset path) with severity 'normal' and
-   category 'visual-unverified' — note that pixel-grounding is required
-   before merging.
-3. For PDF/text-spec references: read the spec if accessible; otherwise flag
-   claims that depend on spec values as 'spec-unverified'.
-4. Do NOT silently rubber-stamp code-internal consistency
-   (e.g. \"canvas token matches consumers\") as evidence of ground-truth
-   fidelity — those are different properties.
+   weights, spacing, iconography): sample what the reference shows and
+   compare to the code values in the diff. Flag any divergence with
+   severity 'normal' and category 'visual-divergence', including the
+   sampled reference value and the code value you're contradicting.
+3. For PDF / text-spec references: read the spec and compare claims in
+   the diff against the spec text. Flag contradictions as 'spec-divergence'.
+4. Do NOT silently rubber-stamp code-internal consistency (e.g. \"canvas
+   token matches consumers\") as evidence of ground-truth fidelity —
+   those are different properties.
+5. If the reference is truly unreadable in your environment (rare), say so
+   explicitly and tag visual-fidelity findings as 'visual-unverified'
+   rather than skipping them.
 
 "
     fi

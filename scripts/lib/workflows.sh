@@ -161,32 +161,52 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
         cmd_array+=(-p "")
     fi
 
-    # ─── lestephen.23: --image plumbing (closes F12 / GH #7) ────────────────
+    # ─── lestephen.24: --image plumbing (closes F12 / GH #7) ────────────────
     # OCTO_AGENT_IMAGES is set by `orchestrate.sh probe-single --image <path>`
-    # (newline-separated paths). We splice per-provider image flags into
-    # cmd_array here. Providers without headless vision get a warning in the
-    # result header but the dispatch continues — the model sees the text
-    # prompt and can reason about what's described, just without seeing pixels.
+    # (newline-separated paths). RETESTED in lestephen.24 after user pushback
+    # on lestephen.23's pessimistic matrix:
+    #   - codex: sees images both via -i flag AND via path-reference in prompt
+    #   - claude --print: sees images via path-reference in prompt
+    #   - gemini headless: sees images via @file AND via path-reference in prompt
+    # i.e. ALL three providers handle path-referenced images natively. The
+    # universal mechanism is appending the absolute path(s) into the prompt
+    # body; the codex -i splice stays as a redundant explicit signal.
     local -a _image_files=()
     local _image_note=""
     if [[ -n "${OCTO_AGENT_IMAGES:-}" ]]; then
         mapfile -t _image_files <<< "$OCTO_AGENT_IMAGES"
-        # Drop empty trailing element from trailing newline in printf
         local _last_idx=$(( ${#_image_files[@]} - 1 ))
         [[ $_last_idx -ge 0 && -z "${_image_files[$_last_idx]}" ]] && unset '_image_files[$_last_idx]'
     fi
     if [[ ${#_image_files[@]} -gt 0 ]]; then
-        local _img _missing=0
+        local _img _missing=0 _missing_files=""
         for _img in "${_image_files[@]}"; do
             if [[ ! -f "$_img" ]]; then
                 log "WARN" "probe_single_agent: --image path missing at dispatch time: $_img"
                 _missing=1
+                _missing_files+="${_img} "
             fi
         done
+
+        # Universal mechanism: append an "Attached images" block to the prompt
+        # body, listing absolute paths. Codex/Claude/Gemini all read referenced
+        # paths from the prompt. This is the load-bearing path that actually
+        # delivers pixels to the model.
+        local _files_listed
+        _files_listed=$(printf '%s\n' "${_image_files[@]}" | sed 's/^/  - /')
+        enhanced_prompt="${enhanced_prompt}
+
+---
+
+Attached images (paths — your provider's CLI will read these for vision):
+${_files_listed}"
+
+        # Codex belt-and-suspenders: also splice -i <path> before trailing '-'
+        # for codex agents. Redundant with the prompt-body path (codex sees the
+        # image both ways) but stays as an explicit signal that survives any
+        # future prompt-body rewriting.
         case "$agent_type" in
             codex|codex-standard|codex-max|codex-mini|codex-general|codex-spark|codex-reasoning|codex-large-context)
-                # codex command ends in trailing '-' (stdin marker). Insert -i
-                # flags BEFORE the trailing '-' so positional ordering survives.
                 if [[ $_missing -eq 0 ]]; then
                     local _last="${cmd_array[-1]}"
                     if [[ "$_last" == "-" ]]; then
@@ -196,58 +216,23 @@ IMPORTANT: If you find yourself searching or grepping more than 3 times in a row
                         done
                         cmd_array+=("-")
                     else
-                        # Defensive — if the command shape changes upstream
                         for _img in "${_image_files[@]}"; do
                             cmd_array+=(-i "$_img")
                         done
                     fi
-                    _image_note="# Images attached (codex -i): $(printf '%s ' "${_image_files[@]}")"
+                    _image_note="# Images attached (codex -i + prompt-body paths): $(printf '%s ' "${_image_files[@]}")"
                 else
-                    _image_note="# Images requested but missing on disk — dispatched without image attachment"
+                    _image_note="# Images requested but missing on disk: ${_missing_files}— dispatched without -i (paths still referenced in prompt body)"
                 fi
                 ;;
-            claude|claude-sonnet|claude-opus|claude-opus-fast|claude-opus-legacy)
-                # claude CLI (--print headless) does NOT accept image flags on the
-                # command line — vision works through host conversation context.
-                # When invoked here, claude runs as an external subprocess and
-                # can't see the image. Graceful degrade: list filenames in note.
-                _image_note="# Images requested but claude CLI (--print) has no headless image attachment — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
-                log "WARN" "probe_single_agent: claude headless cannot attach images; dispatching text-only ($agent_type)"
-                ;;
-            gemini*|qwen*|cursor-agent*|copilot*|perplexity*|ollama*|opencode*|openrouter*)
-                # Gemini headless CLI rejects image attachments (400 errors
-                # observed in spike research, lestephen.22). Other providers
-                # similarly lack documented headless image flags. Degrade
-                # gracefully — list filenames in a note so the model knows
-                # what's being referenced.
-                _image_note="# Images requested but provider $agent_type lacks headless image attachment — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
-                log "WARN" "probe_single_agent: $agent_type lacks headless image attachment; dispatching text-only"
-                ;;
             *)
-                _image_note="# Images requested but unknown provider $agent_type — dispatched text-only. Files: $(printf '%s ' "${_image_files[@]}")"
+                if [[ $_missing -eq 0 ]]; then
+                    _image_note="# Images attached (prompt-body paths): $(printf '%s ' "${_image_files[@]}")"
+                else
+                    _image_note="# Images requested but missing on disk: ${_missing_files}— provider may flag the missing files"
+                fi
                 ;;
         esac
-
-        # SEV-1 (codex dogfood): for degraded providers, prepend a notice to
-        # the prompt body itself so the MODEL knows it cannot see pixels.
-        # Without this, gemini/claude/etc. happily hallucinate "I can see..."
-        # against a filename. The result-file header is for the dispatcher
-        # post-hoc; the prompt prepend is for the model in-the-moment.
-        if [[ "$_image_note" != "# Images attached"* ]]; then
-            local _files_joined
-            _files_joined=$(printf '%s\n' "${_image_files[@]}" | sed 's/^/    - /')
-            enhanced_prompt="⚠️ IMAGE INPUT WARNING (lestephen.23): The caller requested image attachment but YOUR PROVIDER ($agent_type) does not support headless image input through this dispatch path. You are receiving FILENAMES ONLY, not pixel data:
-${_files_joined}
-
-DO NOT pretend to see pixel content. If the task requires visual inspection,
-explicitly state: \"I cannot inspect image pixels via this dispatch path.\"
-You MAY still reason about the file metadata (filename, path) and provide
-structural critique based on the surrounding text prompt.
-
----
-
-${enhanced_prompt}"
-        fi
     fi
 
     # Write result file header (must come AFTER -p "" + image splicing so

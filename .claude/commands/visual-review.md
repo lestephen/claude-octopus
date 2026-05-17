@@ -150,14 +150,12 @@ Before dispatching, output the standard banner with explicit vision status:
 
 Reference artifact: <REF_ABS>
 
-Pixel-attachment status per provider (lestephen.23 — NOT model-level vision):
-🔴 Codex CLI: pixel attachment ✅ via -i (if vision-routed model selected)
-🔵 Claude (--print headless): pixel attachment ❌ — CLI has no --image flag (model itself has vision)
-🟡 Gemini (headless): pixel attachment ❌ — CLI rejects @file attachments (model itself has vision)
+Vision providers (lestephen.24 retest — all see attached pixels):
+🔴 Codex CLI: ✅ (-i flag + prompt-body path)
+🔵 Claude --print: ✅ (auto-reads referenced paths)
+🟡 Gemini headless: ✅ (@file / prompt-body path)
 
-Visual-fidelity findings from text-degraded reviewers (Claude, Gemini)
-will be tagged 'visual-unverified' and require manual pixel-grounding
-before merge. Only Codex findings are pixel-grounded in this dispatch.
+All three providers will inspect the reference artifact pixels alongside the diff.
 ```
 
 ## Follow-up (deferred to dedicated issue)
