@@ -352,6 +352,61 @@ review_run() {
         reference=""
     fi
 
+    # lestephen.28 (closes GH #14): export the reference path as OCTO_AGENT_IMAGES
+    # so spawn_agent (Round 1 fleet) and run_agent_sync (Round 2 verification,
+    # Round 3 synthesis) all attach the image via the shared image-attach
+    # helper. Previously the reference field only injected a text preamble;
+    # the reviewers couldn't actually see pixels.
+    #
+    # Stash/restore the env var around the review so it doesn't leak past
+    # this function (consensus SEV-2 from both codex+claude: stale
+    # OCTO_AGENT_IMAGES could attach prior review's image to subsequent
+    # dispatches in the same shell). Distinguish "unset" from "set-but-empty"
+    # using ${VAR+set} so a caller's "" is restored as "" (not unset),
+    # closing the v2 SEV-3 claude flagged.
+    local _saved_octo_agent_images_was_set="${OCTO_AGENT_IMAGES+yes}"
+    local _saved_octo_agent_images="${OCTO_AGENT_IMAGES:-}"
+    local _restore_octo_agent_images=false
+    if [[ -n "$reference" ]]; then
+        # Use realpath -m for robust absolution (works even if parent path is
+        # tricky); fall back to cd-based for portability if realpath missing.
+        # Closes consensus SEV-3 (claude): cd-fallback silently emitted
+        # "/<basename>" when cd failed.
+        local _ref_abs=""
+        if command -v realpath >/dev/null 2>&1; then
+            _ref_abs=$(realpath -m "$reference" 2>/dev/null)
+        fi
+        if [[ -z "$_ref_abs" ]]; then
+            local _ref_dir
+            _ref_dir=$(cd "$(dirname "$reference")" 2>/dev/null && pwd)
+            if [[ -n "$_ref_dir" ]]; then
+                _ref_abs="$_ref_dir/$(basename "$reference")"
+            else
+                log "WARN" "review_run: could not resolve absolute path for reference=$reference; skipping image export"
+                _ref_abs=""
+            fi
+        fi
+        if [[ -n "$_ref_abs" ]]; then
+            export OCTO_AGENT_IMAGES="$_ref_abs"
+            _restore_octo_agent_images=true
+            log "INFO" "review_run: exporting OCTO_AGENT_IMAGES=$_ref_abs for review fleet"
+        fi
+    fi
+    # Restore the env var when this function exits (via EXIT trap on a subshell
+    # would be cleaner, but review_run isn't subshelled — use explicit RETURN
+    # trap so we restore on any return path including early errors).
+    if [[ "$_restore_octo_agent_images" == "true" ]]; then
+        # Quote the saved value carefully (could contain spaces, semicolons).
+        # The trap fires when review_run returns, before caller resumes.
+        # shellcheck disable=SC2064 # we WANT _saved_octo_agent_images expanded now
+        if [[ "$_saved_octo_agent_images_was_set" != "yes" ]]; then
+            trap 'unset OCTO_AGENT_IMAGES' RETURN
+        else
+            # set-but-empty preserved as "" (not unset)
+            trap "export OCTO_AGENT_IMAGES=$(printf '%q' "$_saved_octo_agent_images")" RETURN
+        fi
+    fi
+
     # v9.0: Provider status tracking for post-run report card
     local provider_status_file
     provider_status_file=$(mktemp "${TMPDIR:-/tmp}/octopus-provider-status.XXXXXX")
@@ -663,7 +718,13 @@ ${agent_prompt_base}"
     # ── ROUND 2: Verification ─────────────────────────────────────────────────
     log INFO "review_run: Round 2 — verification"
     local verifier_prompt
+    # lestephen.28 (closes GH #13): inject reference_preamble into Round 2.
+    # Previously the preamble only fed Round 1; the verifier judged against
+    # diff-only and could drop visual-unverified findings as "unsupported by
+    # the diff" — defeating the cheapest leg of GH #11.
     verifier_prompt="You are a code review verifier. For each finding below, check whether it is a real bug (confirmed), a false positive, or needs debate (uncertain/conflicting).
+
+${reference_preamble}When verifying visual-fidelity findings tagged 'visual-divergence' or 'visual-unverified': do NOT downgrade or drop them solely because the diff lacks evidence — the diff WOULD lack evidence; the reference artifact is the source of truth. Inspect the reference (you can read the path) and confirm the divergence yourself.
 
 Return ONLY JSON: same findings array with an added 'verdict' field: confirmed|false-positive|needs-debate.
 Also add 'pre_existing_newly_reachable': true if a pre-existing finding becomes reachable via this PR changes.
@@ -709,7 +770,11 @@ Return ONLY valid JSON with 'findings' array including verdict field."
         debate_count=$(echo "$debate_candidates" | jq 'length' 2>/dev/null || echo "0")
         if [[ "$debate_count" -gt 0 ]]; then
             log INFO "review_run: debating $debate_count contested findings"
+            # lestephen.28 (closes GH #13): inject preamble into debate too.
             local debate_prompt="Challenge these $debate_count contested code review findings. For each, state whether it is a real bug (include) or false positive (exclude). Be adversarial.
+
+${reference_preamble}Visual-fidelity findings tagged 'visual-divergence' or 'visual-unverified' must be assessed by inspecting the reference artifact, NOT by checking the diff. The whole point of those tags is that the diff would not show the divergence.
+
 Findings: $(echo "$debate_candidates" | jq -c '.')
 Return JSON: {\"include\": [...finding titles...], \"exclude\": [...finding titles...]}"
             local debate_result
@@ -738,7 +803,13 @@ Return JSON: {\"include\": [...finding titles...], \"exclude\": [...finding titl
     # ── ROUND 3: Synthesis ────────────────────────────────────────────────────
     log INFO "review_run: Round 3 — synthesis"
     local synthesis_prompt
+    # lestephen.28 (closes GH #13): inject preamble into synthesis too. The
+    # synthesizer must preserve visual-divergence/visual-unverified findings
+    # (don't merge them into generic "review findings" that lose the visual
+    # context, don't downgrade their severity in deduplication).
     synthesis_prompt="Deduplicate and rank these code review findings by severity (normal first, then nit, then pre-existing). Merge duplicate findings (same bug from multiple agents) into one entry, preserving all agent perspectives in the detail field.
+
+${reference_preamble}Visual-fidelity findings (category 'visual-divergence' or 'visual-unverified') must be preserved at their original severity — do not downgrade them during deduplication, and do not merge them with non-visual findings that lose the reference-artifact context.
 
 Findings: $(echo "$confirmed_findings" | jq -c '.')
 

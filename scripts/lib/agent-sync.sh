@@ -249,6 +249,17 @@ ${provider_ctx}"
         cmd_array+=(-p "")
     fi
 
+    # lestephen.28: --image plumbing via shared helper (closes GH #14).
+    # OCTO_AGENT_IMAGES → "Attached images" block in prompt body + codex -i
+    # flags. Used by /octo:review Round 2 (verification) and Round 3
+    # (synthesis), which dispatch via run_agent_sync. Without this, only
+    # Round 1 reviewers (spawn_agent path) could see attached pixels.
+    local _sync_image_note=""
+    if declare -f octo_attach_images >/dev/null 2>&1; then
+        octo_attach_images "$agent_type" enhanced_prompt cmd_array _sync_image_note
+        [[ -n "$_sync_image_note" ]] && log "DEBUG" "run_agent_sync: $_sync_image_note"
+    fi
+
     # v9.2.2: All agents use stdin to avoid ARG_MAX "Argument list too long" on large diffs (Issue #173)
     # Captured for partial-writes detection on timeout.
     local _dispatch_start _dispatch_cwd

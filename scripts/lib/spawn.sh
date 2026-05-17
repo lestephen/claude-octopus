@@ -543,6 +543,38 @@ ${heuristic_ctx}"
             cmd_array+=(-p "")
         fi
 
+        # lestephen.28: --image plumbing via shared helper (closes GH #14).
+        # When OCTO_AGENT_IMAGES env var is set (typically by review_run from
+        # the profile's `reference` field), the helper appends image paths to
+        # the prompt body and splices codex -i flags into cmd_array. Universal
+        # mechanism per the lestephen.24 vision-matrix retest.
+        #
+        # The image-attach note is appended to the result file (consensus SEV-3
+        # claude: previous version logged at DEBUG but left no audit trail in
+        # the dispatched result). awk-insert is safe because result_file was
+        # written above (lines 484-492 of this subshell, BEFORE this block)
+        # so the ## Output line already exists.
+        local _spawn_image_note=""
+        if declare -f octo_attach_images >/dev/null 2>&1; then
+            octo_attach_images "$agent_type" enhanced_prompt cmd_array _spawn_image_note
+            if [[ -n "$_spawn_image_note" ]]; then
+                log "DEBUG" "spawn_agent: $_spawn_image_note"
+                local _tmpres="${RESULTS_DIR}/.tmp-imgnote-${task_id}.md"
+                if awk -v note="$_spawn_image_note" '
+                    !inserted && /^## Output$/ { print note; print ""; inserted=1 }
+                    { print }
+                ' "$result_file" > "$_tmpres" 2>/dev/null; then
+                    mv "$_tmpres" "$result_file"
+                else
+                    # Defensive: awk failed (e.g. ## Output not found yet).
+                    # Append note at end-of-file so it's still in the artifact,
+                    # and clean up the failed tempfile (consensus v2 SEV-3).
+                    rm -f "$_tmpres"
+                    echo "$_spawn_image_note" >> "$result_file"
+                fi
+            fi
+        fi
+
         local auth_attempt=0
         local exit_code=0
         while true; do

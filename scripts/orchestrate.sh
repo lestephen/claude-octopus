@@ -117,6 +117,7 @@ source "${SCRIPT_DIR}/lib/providers.sh"
 source "${SCRIPT_DIR}/lib/provider-allowlist.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/preflight.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/dispatch.sh" 2>/dev/null || true
+source "${SCRIPT_DIR}/lib/image-attach.sh" 2>/dev/null || true   # lestephen.28 (GH #14)
 source "${SCRIPT_DIR}/lib/progressive.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/pr-review-state.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/lib/proof-packet.sh" 2>/dev/null || true
