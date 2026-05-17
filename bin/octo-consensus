@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# octo-consensus — machine-enforced consensus gate entry point (GH #16).
+#
+# Thin wrapper that resolves the plugin dir and delegates to
+# scripts/lib/consensus-gate.sh. See `octo-consensus --help` for usage.
+#
+# Plugin-dir resolution mirrors bin/octopus + bin/octo-compress:
+#   1. $OCTOPUS_PLUGIN_DIR if set
+#   2. $HOME/.claude-octopus/plugin (canonical install path)
+#   3. Walk up from this script's location
+
+set -uo pipefail
+
+_resolve_plugin_dir() {
+    if [[ -n "${OCTOPUS_PLUGIN_DIR:-}" && -d "$OCTOPUS_PLUGIN_DIR" ]]; then
+        echo "$OCTOPUS_PLUGIN_DIR"; return
+    fi
+    if [[ -d "$HOME/.claude-octopus/plugin" && -f "$HOME/.claude-octopus/plugin/scripts/lib/consensus-gate.sh" ]]; then
+        echo "$HOME/.claude-octopus/plugin"; return
+    fi
+    # Walk up from script location
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    local candidate="$here/.."
+    if [[ -f "$candidate/scripts/lib/consensus-gate.sh" ]]; then
+        (cd "$candidate" && pwd -P); return
+    fi
+    echo "ERROR: cannot resolve plugin dir; set OCTOPUS_PLUGIN_DIR or install to ~/.claude-octopus/plugin" >&2
+    exit 1
+}
+
+PLUGIN_DIR="$(_resolve_plugin_dir)"
+GATE_LIB="$PLUGIN_DIR/scripts/lib/consensus-gate.sh"
+
+if [[ ! -f "$GATE_LIB" ]]; then
+    echo "ERROR: consensus-gate.sh not found at $GATE_LIB" >&2
+    exit 1
+fi
+
+# Source the lib + invoke main
+# shellcheck source=../scripts/lib/consensus-gate.sh
+source "$GATE_LIB"
+octo_consensus_main "$@"

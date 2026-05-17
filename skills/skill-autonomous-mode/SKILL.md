@@ -289,9 +289,26 @@ These are the existing fork tools. Autonomous mode now MUST use them at the trig
 | 2 providers attempted but 1 dispatch failed (transient) | Not consensus | Re-dispatch the failed leg before counting votes. A failed dispatch is not a passing vote. |
 | All providers find SEV-1 | Definitely wrong | File issue, halt, surface |
 
-**Quoting requirement (partial mitigation of SEV-1b on host-model judgment).** Before declaring consensus reached, the host model MUST quote the verbatim severity-line outputs from each provider in scrollback (e.g. `Codex: NO BLOCKING FINDINGS`, `Gemini: SEV-2 ...`). Paraphrasing or summarizing the consensus result is forbidden — the user must be able to audit the literal provider outputs that the gate decision was based on. The lib-multi-dispatch.sh `dispatch.json` artifact is the canonical record; cite its path.
+**Machine enforcement (lestephen.27+, closes the SEV-1b acknowledged below).** The consensus check is now enforced by `bin/octo-consensus` (delegating to `scripts/lib/consensus-gate.sh`), which parses `lib-multi-dispatch.sh`'s `dispatch.json` mechanically, applies the consensus-definition table from this section as code, and exits non-zero on BLOCK. The host model MUST invoke it like this:
 
-**Honest limit of this rule (acknowledged SEV-1b).** The quoting requirement provides *auditability* (user can after-the-fact verify the model's claim), not *enforcement* (the same host model still decides which lines to quote, whether they constitute consensus, and proceeds). A determined or anchored host model could still hallucinate "consensus reached" while quoting selectively. Fully machine-checkable enforcement requires a non-model layer — a hook or wrapper script that parses `dispatch.json`, applies the consensus definition table mechanically, and fails closed (refuses the action) on its own. That's tracked as a follow-up; the prose rule is the necessary precursor (defines the contract that the enforcement layer will check). Until the enforcement layer ships, the user MUST audit consensus declarations in scrollback rather than trusting them.
+```bash
+# After dispatching critique via lib-multi-dispatch.sh:
+$PLUGIN_DIR/bin/octo-consensus check \
+    "$OUTPUT_DIR/dispatch.json" \
+    "<short action description>"
+# Exit 0 → ALLOW (proceed); 1 → HARD BLOCK (≥2 SEV-1); 2 → SOFT BLOCK (≥2 SEV-2);
+# 3 → SPLIT (adjudicate); 4 → NO QUORUM / NO DIVERSITY; 5 → PARSE ERROR.
+```
+
+The gate enforces:
+- ≥2 successful reviewers (quorum)
+- ≥2 distinct provider families (codex+codex-mini is NOT diversity; gate maps `qwen`/`cursor-agent` to gemini family because they fork gemini CLI)
+- Severity-line grammar: `^SEV-[1-5]: <name> — <why>` or `^NO BLOCKING FINDINGS` (anchored, in the result file's `## Output` section). Reviewers who emit findings in any other format count as **unparseable** and don't contribute votes — this is intentional, it prevents the "host model decides what the prose means" failure mode.
+- Consensus definition: ALLOW iff ≥2 parseable providers, no SEV-1 from any, no majority SEV-2.
+
+**Quoting requirement (additional auditability layer).** Even with the machine gate, the host model SHOULD quote the verbatim severity-line outputs and the gate verdict block to scrollback so the user can audit without re-running. Cite the `dispatch.json` path.
+
+**Honest residual limit.** `octo-consensus` enforces the gate at the point of invocation, but a host model could still skip invoking the gate entirely. Hooking the gate into git pre-commit / CI / wrapper-around-`/octo:autonomous` is the next layer (tracked in GH #16's follow-ups). For now, the autonomous-mode protocol REQUIRES invoking `octo-consensus check ...` before each consensus-required action class; the MANDATORY COMPLIANCE rule below makes skipping a violation.
 
 ### Failure modes
 
@@ -301,6 +318,7 @@ These are the existing fork tools. Autonomous mode now MUST use them at the trig
 | Critique returns "looks fine" from one provider, dispatch fails from another | NOT consensus (a failed dispatch is not a passing vote). Halt and re-dispatch the failed leg. |
 | Critique is itself the action (e.g. user explicitly invoked /octo:critique) | Recursion guard — don't run consensus check on the consensus check; the critique IS the consensus |
 | The same action keeps failing consensus after 3 dispatches | Halt for user input; this is a signal the work needs human direction |
+| **3 substantive critique rounds** (each round addressing the previous round's findings, even if findings are different each time) | **Halt for user input** (lestephen.27 tightening, after GH #16 hit 6 rounds). Each round costs time + tokens; if 3 rounds haven't reached consensus, escalate the decision: ship-with-documented-residual-risk vs. keep iterating vs. abandon. Present the iteration history (each round's verdicts) so the user can decide. |
 | Provider CLIs route through the same backend (e.g. both wrap GPT-4 via OpenRouter) | Not actually independent. Consensus prompt MUST go through dispatch.sh with distinct `agent_type` values that map to distinct provider families (codex+gemini, codex+claude, gemini+claude). Two wrappers around the same backend do not count. |
 | Reviewers see stale context (e.g. diff hash drifts during dispatch) | Include a content snapshot identifier in the consensus prompt — for diffs, `git diff HEAD | sha256sum` first ~16 chars; for files, the file's mtime+size. Reviewers must echo the identifier in their response so a context mismatch is detectable. |
 | User invoked autonomous mode and only 1 provider is up | Degraded mode is honored — but autonomous mode itself REMAINS active; only the consensus-required actions block. User can override by leaving autonomous mode and re-invoking with the missing provider restored. |
@@ -332,6 +350,9 @@ You are PROHIBITED from:
 - **Halting work to ask the user a question that you could reasonably resolve via judgment + an issue.** The whole point of autonomy is to keep moving.
 - **Bypassing safety/compliance gates** (defensibility-BLOCKED, security HIGH findings, ship critical issues). See precedence section above — these always halt.
 - **Bypassing the consensus-before-action gate** (see "Consensus before action" section). Single-LLM judgment is NOT sufficient for the action classes listed there, even if the action seems obvious. The lestephen.23 wrong-matrix shipped because single-LLM judgment seemed obviously right.
+- **Skipping `bin/octo-consensus check` after dispatching the critique.** Dispatching multi-LLM critique without then running `octo-consensus check $dispatch_json` defeats the gate — you've spent the tokens but not enforced the check. Invoke the gate, quote its verdict block in scrollback, and respect its exit code.
+- **Re-running the gate until it ALLOWs without addressing the findings.** If `octo-consensus` returns BLOCK, the next dispatch must be on a *modified* action that addresses the findings, not the same action with the hope that one of the providers will be in a different mood. Quote the previous BLOCK verdict in the next dispatch's prompt so reviewers know what was already raised.
+- **Running more than 3 substantive critique rounds without surfacing to the user** (lestephen.27 cap, after GH #16's 6-round dogfood). Each round is expensive in tokens and time. Address findings in iteration 1 → re-dispatch → address in iteration 2 → re-dispatch → if iteration 3 STILL has SEV-1, present the round history to the user and let them choose ship/iterate/abandon. Even if every round's findings are different (legitimate progress), the cap fires — long iteration loops often signal a code area too edge-case-heavy for prose-rule gating and need user direction.
 - **Framing consensus-check prompts leadingly.** Prompts like "Already verified X works; find OTHER bugs" anchor reviewers and waste the consensus check. State the action to be checked neutrally; let providers reach their own conclusions.
 - **Substituting two Claude subagents for multi-LLM consensus.** The point is provider diversity. Two Claude agents are one perspective with two names. The consensus check MUST dispatch to ≥2 distinct provider CLIs.
 - **Batching issues to file at end-of-session.** File at discovery time. By end-of-session you will not remember the specifics.
