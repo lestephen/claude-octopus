@@ -1,7 +1,7 @@
 From 035d36f2018802c341b7513a7e3fbff855353613 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 22:55:14 -0700
-Subject: [PATCH 19/20] feat(km): defensibility-pass + argument-strength
+Subject: [PATCH 19/21] feat(km): defensibility-pass + argument-strength
  skills, 3 library primitives for multi-LLM dispatch
 
 The existing /octo:km mode is a context-switch flag that swaps in

@@ -126,6 +126,10 @@ resolve_octopus_model() {
             # Handle recursive reference (e.g. "codex:spark")
             # v9.17.1: Skip cross-provider routing — if route targets a different provider,
             # don't apply its model to the current provider (fixes #235 item 3)
+            # lestephen.14: Same cross-provider skip for bare-provider form
+            # (e.g. role=researcher routed to bare "perplexity"). Previously the
+            # bare-provider branch had no safety check and would assign the wrong
+            # provider name as the model for the current provider's dispatch.
             if [[ -n "$routed" && "$routed" != "null" ]]; then
                 if [[ "$routed" == *:* ]]; then
                     local ref_provider="${routed%%:*}"
@@ -138,7 +142,29 @@ resolve_octopus_model() {
                         resolved_model=$(resolve_octopus_model "$ref_provider" "$ref_type" "" "")
                     fi
                 else
-                    resolved_model="$routed"
+                    # Bare value — could be a model name OR a bare provider name.
+                    # If it matches a known provider, treat it as a provider
+                    # reference (not a literal model name): different provider
+                    # means skip (cross-provider safety), same provider means
+                    # fall through to capability/default resolution.
+                    case "$routed" in
+                        codex|gemini|claude|perplexity|openrouter|qwen|cursor-agent|opencode|copilot|ollama)
+                            if [[ "$routed" != "$provider" ]]; then
+                                [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): SKIP (bare '$routed' is a different provider than '$provider')" >&2
+                                routed=""
+                            else
+                                # Same provider — clear routed and fall through to
+                                # capability/default resolution rather than using
+                                # the provider name as a literal model name
+                                [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): bare provider '$routed' matches current provider; falling through to capability/default" >&2
+                                routed=""
+                            fi
+                            ;;
+                        *)
+                            # Not a known provider name — treat as a literal model name
+                            resolved_model="$routed"
+                            ;;
+                    esac
                 fi
                 if [[ -n "$routed" ]]; then
                     [[ -n "$_trace" ]] && echo "[model-trace] Tier 3 (phase/role routing): $resolved_model ← SELECTED (route: $routed)" >&2

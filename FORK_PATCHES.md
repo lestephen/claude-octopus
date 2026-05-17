@@ -1,9 +1,9 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 21 commits on top of `upstream/main` (currently at
+This fork carries 22 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
-`v9.38.0-lestephen.13`.
+`v9.38.0-lestephen.14`.
 
 Each patch in this document is structured for **upstream PR
 submission**: bug description, repro, root cause, fix, and a
@@ -45,7 +45,8 @@ across all manifests at once; see `scripts/bump-fork.sh --help`.
 | 18 | `706203c` | chore | Fork versioning: encode `-lestephen.N` in manifests, add `bump-fork.sh`, doctor display | No — fork-only convention |
 | 19 | `035d36f` | feat  | Knowledge-work Phase 1: skill-defensibility-pass, skill-argument-strength + 3 library skills (multi-review-doc, multi-inspect-figure, independent-recompute) | Plausible — universal multi-LLM skills; discuss adversarial-review framing with maintainer first |
 | 20 | `30297db` | fix   | Library skills: correct probe-single call signature (prompt is `$2` not `$4`) and output file pattern (`<agent>-<task_id>.md`) | Bundle with #19 — fixes the same code path |
-| 21 | _pending_ | feat  | Slash command shortcuts for new skills (`/defensibility`, `/argument-strength`); command count 48→50 across manifests | Bundle with #19 — surfaces the new skills as first-class commands |
+| 21 | `965b2d6` | feat  | Slash command shortcuts for new skills (`/defensibility`, `/argument-strength`); command count 48→50 across manifests | Bundle with #19 — surfaces the new skills as first-class commands |
+| 22 | _pending_ | fix   | Cross-provider safety for bare-provider routing in `resolve_octopus_model` — fixes #1 (codex routed to perplexity via `roles.researcher`) | **Yes — clear bug, completes the v9.17.1 patch** |
 
 **Highest-value upstream PR candidates: #5, #6, #8, #10, #12, #17** — small,
 obviously correct, no behavior change for end users. #2 and #4 are
@@ -1037,7 +1038,7 @@ as an upstream PR, squash these two into a single feature commit.
 
 ## Patch 21 — `feat(km): slash-command shortcuts for defensibility and argument-strength`
 
-**Commit:** _pending_
+**Commit:** `965b2d6`
 **Files:** `.claude/commands/defensibility.md` (new), `.claude/commands/argument-strength.md` (new), `.claude-plugin/plugin.json` (commands list), 6 manifest files (command count 48→50)
 
 ### Background
@@ -1071,6 +1072,91 @@ that patch introduced.
 
 ---
 
+## Patch 22 — `fix(routing): cross-provider safety for bare-provider routing in resolve_octopus_model`
+
+**Commit:** _pending_
+**Files:** `scripts/lib/model-resolver.sh` (+18 / -2)
+
+### Bug
+
+`resolve_octopus_model` in `scripts/lib/model-resolver.sh` has two
+branches for the Tier 3 (phase/role routing) result:
+
+- **Colon form** (`"codex:spark"`): cross-provider safety check at
+  line 130 — added in v9.17.1 (#235 item 3) — skips the route when
+  the prefixed provider differs from the current resolution target.
+- **Bare form** (`"perplexity"`): no safety check; the bare value
+  was assigned directly to `resolved_model`.
+
+When `providers.json` contains `"routing.roles.researcher": "perplexity"`
+(a bare provider name) and the caller resolves for a different
+provider (e.g. `agent_type=codex` with the default `role=researcher`),
+the bare branch assigned `resolved_model="perplexity"`. Codex CLI was
+then invoked with `--model perplexity`, which it cannot use, and
+produced empty output. The result file's `## Status` was `FAILED`
+but the file existed — so library-skill validation gates that checked
+only for file existence + non-empty saw a header'd file and reported
+success while the dispatch had silently failed.
+
+### Discovery
+
+Surfaced during dogfood of `/octo:argument-strength` at v9.38.0-lestephen.13
+(GitHub issue #1). Codex reviewer produced 0 useful content;
+investigation traced the routing chain through `probe_single_agent`
+→ `get_agent_model` → `resolve_octopus_model` → Tier 3 bare-branch.
+
+### Fix
+
+Mirror the v9.17.1 cross-provider safety into the bare branch. When
+the bare routed value matches a known provider name:
+
+- Different provider than the resolution target → skip the route
+  (fall through to Tier 4 capability map / Tier 6 default).
+- Same provider as the resolution target → also skip (so we don't
+  assign the provider name as a literal model name) and fall through
+  to capability/default resolution. This also fixes a latent issue
+  where `provider=perplexity, role=researcher` would have resolved to
+  `model=perplexity` instead of `model=sonar-pro`.
+
+When the bare routed value does NOT match a known provider name,
+treat it as a literal model name (preserves existing behavior for
+configurations that legitimately use bare model identifiers).
+
+Verified with three trace runs:
+
+- `provider=codex, role=researcher` → resolves to `gpt-5.5` (was: `perplexity`)
+- `provider=perplexity, role=researcher` → resolves to `sonar-pro` (was: `perplexity`)
+- `provider=gemini, role=verifier` (colon-form route to `codex:spark`) → unchanged, resolves to `gemini-3.1-pro-preview` per v9.17.1 behavior
+
+### Suggested upstream PR title
+
+> `fix(model-resolver): cross-provider safety for bare-provider routing (completes v9.17.1)`
+
+### Suggested upstream PR body
+
+> v9.17.1 added cross-provider safety to the colon-form routing in
+> `resolve_octopus_model` (skips the route when `provider:capability`
+> targets a different provider than the resolution target). The
+> bare-provider form (`"perplexity"` instead of `"perplexity:default"`)
+> was missed and had no safety check.
+>
+> When `providers.json` has `routing.roles.researcher: "perplexity"`,
+> any role-routed call resolving for a different provider (codex,
+> gemini, etc.) would silently get `model=perplexity` assigned — a
+> string the target provider's CLI cannot use. This produced empty
+> output with `Status: FAILED`, but downstream validation gates
+> checking only for file existence would not catch it.
+>
+> This PR adds the same cross-provider skip to the bare-form branch,
+> plus a same-provider fall-through (so `provider=perplexity,
+> role=researcher` resolves to `sonar-pro` via the default rather
+> than the literal string `"perplexity"`).
+>
+> Closes the routing-side of any library-skill multi-provider dispatch
+> that relies on `probe_single_agent`.
+
+---
+
 ## Applying these patches
 
 To apply the entire series to a fresh `upstream/main` checkout:
@@ -1088,7 +1174,7 @@ Or apply individual patches via `git am`:
 git am path/to/lestephen/claude-octopus/patches/0005-fix-commands-prevent-self-referential-symlink-in-oct.patch
 ```
 
-The `patches/` directory in this fork contains all 21 patches as mbox
+The `patches/` directory in this fork contains all 22 patches as mbox
 files numbered in chronological order. The convention is that each
 new patch is regenerated alongside the *next* fork-docs commit (so
 the patches/ directory always lags HEAD by one commit at most). After

@@ -1,7 +1,7 @@
 From 7cf78b617a1c56d94a148b373aaf630882aeba25 Mon Sep 17 00:00:00 2001
 From: lestephen <30328443+lestephen@users.noreply.github.com>
 Date: Sat, 16 May 2026 15:47:46 -0700
-Subject: [PATCH 16/20] fix(tangle): checkpoint counter scans running streams +
+Subject: [PATCH 16/21] fix(tangle): checkpoint counter scans running streams +
  anchors markers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
