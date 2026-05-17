@@ -241,9 +241,89 @@ Format:
 
 1. **Safety / compliance gates** — `/octo:defensibility-pass` returns BLOCKED, `/octo:security` finds a HIGH-severity vulnerability, `skill-ship` reports critical issues. Autonomous mode does NOT bypass these; it stops, files the issue, and surfaces.
 2. **Destructive actions** — see expanded list below. Never executed under autonomy without explicit per-action confirmation.
-3. **Explicit user intent unambiguously requires their input** — e.g., the user previously said "ask me before X"; the user's task explicitly asks "should we…?"
+3. **Cross-model consensus required** — see "Consensus before action" section below. Specific action classes require ≥2 providers to agree before the action proceeds.
+4. **Explicit user intent unambiguously requires their input** — e.g., the user previously said "ask me before X"; the user's task explicitly asks "should we…?"
 
 For everything else (clarifying questions about implementation choices, "do you want option A or B" questions when one is reasonable, "should I add tests" etc.), autonomous mode SUPPRESSES the halt and proceeds with judgment + an issue if non-obvious.
+
+## Consensus before action (lestephen.25+, closes GH #15)
+
+**Background.** Autonomous mode previously trusted single-LLM judgment (usually the host Claude or one critique pass) for everything between halts. That trust failed in lestephen.23: I shipped a wrong "Gemini/Claude headless CLIs don't see images" matrix because the host model concluded from one failed test, never re-tested, and the dogfood critique was single-LLM (codex) framed leadingly. The fork ships `/octo:critique` precisely to catch what single-model judgment misses — and autonomous mode was bypassing that tool for the work it was built for.
+
+**Rule.** In autonomous mode, the following action classes MUST pass cross-model consensus before the action is taken. Triggers are objective; there is no "I judge this doesn't qualify" interpretation gate.
+
+### Consensus-required actions (objective trigger list)
+
+| # | Trigger | Why mechanical |
+|---|---------|----------------|
+| 1 | Any `git commit` that touches code OR config OR schema OR manifest (see "code vs. trivial" below) | Code/config commits encode decisions that survive the session |
+| 2 | Any `git push` to a shared remote | External visibility; harder to retract |
+| 3 | Declaring a deliverable "shipped" / "complete" / "ready" to the user | Status claim the user will rely on |
+| 4 | **Writing or editing a matrix / table / contract / capability statement / behavioral claim about any external system into ANY artifact** (code, docs, issue body, commit message, PR description, README, skill prose, scratchpad — file type does NOT exempt) | Exactly the v.23 failure mode; this trigger overrides the docs-only exemption below |
+| 5 | Picking one of N approaches when ≥2 alternatives have been named in the conversation, OR when the change touches >1 file's public interface, OR when a new dependency / framework / cross-cutting pattern is introduced | Concrete signals; not "I think this is significant" |
+| 6 | Closing a tracked issue as "done" or marking work-item "resolved" | Same as #3 — status claim |
+| 7 | Acting on a single-LLM critique finding (apply OR dismiss) | Single-LLM critique can be wrong both ways |
+| 8 | Merging a PR, creating a git tag, creating a GitHub release, publishing a package (npm/PyPI/etc.), deploying, modifying CI/CD config (`.github/workflows`, `.gitlab-ci.yml`, etc.), modifying IaC (Terraform/CloudFormation/Pulumi/Kubernetes manifests), modifying Dockerfile, modifying lockfile (only when intentional) | Release-grade actions create downstream reliance |
+| 9 | Filing an issue whose body itself contains a capability/matrix/contract claim (trigger #4 applies to issue bodies too) | Issue bodies become reference material; #4 doesn't get bypassed by writing into the tracker |
+
+**"Code" vs. trivial-content for trigger #1.** Treat the following as code: source files in any language (`.sh|.py|.ts|.tsx|.js|.jsx|.go|.rs|.java|.cpp|.c|.h|.swift|.kt|.rb|.php|.lua|.zig|.scala|.elm|.ex|.exs`), config (`.yaml|.yml|.toml|.json|.jsonc|.ini|.conf|.env`-templates), schema (`.sql|.proto|.graphql|.openapi.*|.json-schema`), build/deploy (`Dockerfile|Makefile|*.mk|.github/workflows/*|.gitlab-ci.yml|terraform/*|*.tf`), and manifests (`package.json|Cargo.toml|pyproject.toml|go.mod|requirements*.txt|plugin.json|marketplace.json|.claude-plugin/*`). Trivial-content exempt: typo-only fixes to documentation prose, version-bump-only commits in manifests (`x.y.z → x.y.z+1` with no other changes), CHANGELOG/RELEASE-notes entries, scratchpad / local-issues updates.
+
+**The matrix/contract trigger (#4) fires regardless of file type.** A docs-only commit that adds "Gemini headless CLI cannot attach images" to a markdown file IS consensus-required. The docs-only exemption applies to trigger #1 (which is about generic code commits), not to trigger #4 (which is specifically about externally-verifiable behavioral claims wherever they appear).
+
+### Mechanism
+
+- **"Did I do this right?"** → `/octo:critique` (multi-LLM adversarial, ≥2 providers, the existing critique skill)
+- **"Which of N approaches?"** → `/octo:debate` (structured N-way deliberation)
+
+These are the existing fork tools. Autonomous mode now MUST use them at the trigger points above.
+
+### Consensus definition
+
+| Outcome | Meaning | Action |
+|---------|---------|--------|
+| ≥2 providers agree the action is sound, no SEV-1 from ANY, no majority SEV-2 | Consensus | Proceed |
+| ≥2 providers raise SEV-2 (majority concern below blocking threshold) | Soft consensus failure | Address the SEV-2 findings, then re-dispatch; do NOT proceed citing "no SEV-1" alone |
+| Exactly one provider raises SEV-1, the other(s) clean | Split | **Adjudication path:** re-dispatch the action to a third provider (if available) with the lone SEV-1 verbatim included so it can specifically assess the concern. If 2-of-3 then agree the concern is invalid, proceed with the dissenting SEV-1 documented in the appropriate per-action-class artifact: commit message for triggers #1/#4/#5/#7, PR description for trigger #2, issue comment for triggers #3/#6/#9, deployment log / release notes for trigger #8. If still split, file issue + halt + surface. |
+| ≥2 providers raise SEV-1 (independent of each other) | Consensus failure | File issue with each SEV-1 verbatim, halt the action, surface to user |
+| Single provider available (no quorum possible) | Cannot reach consensus | Autonomous mode DEGRADES to "information work + issue-filing only" for ALL consensus-required action classes (1-9, not just commit/push/ship). Document the degradation in scrollback. |
+| 2 providers attempted but 1 dispatch failed (transient) | Not consensus | Re-dispatch the failed leg before counting votes. A failed dispatch is not a passing vote. |
+| All providers find SEV-1 | Definitely wrong | File issue, halt, surface |
+
+**Quoting requirement (partial mitigation of SEV-1b on host-model judgment).** Before declaring consensus reached, the host model MUST quote the verbatim severity-line outputs from each provider in scrollback (e.g. `Codex: NO BLOCKING FINDINGS`, `Gemini: SEV-2 ...`). Paraphrasing or summarizing the consensus result is forbidden — the user must be able to audit the literal provider outputs that the gate decision was based on. The lib-multi-dispatch.sh `dispatch.json` artifact is the canonical record; cite its path.
+
+**Honest limit of this rule (acknowledged SEV-1b).** The quoting requirement provides *auditability* (user can after-the-fact verify the model's claim), not *enforcement* (the same host model still decides which lines to quote, whether they constitute consensus, and proceeds). A determined or anchored host model could still hallucinate "consensus reached" while quoting selectively. Fully machine-checkable enforcement requires a non-model layer — a hook or wrapper script that parses `dispatch.json`, applies the consensus definition table mechanically, and fails closed (refuses the action) on its own. That's tracked as a follow-up; the prose rule is the necessary precursor (defines the contract that the enforcement layer will check). Until the enforcement layer ships, the user MUST audit consensus declarations in scrollback rather than trusting them.
+
+### Failure modes
+
+| Failure | Skill behavior |
+|---|---|
+| Multi-LLM dispatch unavailable (e.g., codex auth broken AND gemini offline) | Autonomous mode degrades; document the degradation in scrollback; only trivial-content edits (typo, version bump, CHANGELOG) proceed |
+| Critique returns "looks fine" from one provider, dispatch fails from another | NOT consensus (a failed dispatch is not a passing vote). Halt and re-dispatch the failed leg. |
+| Critique is itself the action (e.g. user explicitly invoked /octo:critique) | Recursion guard — don't run consensus check on the consensus check; the critique IS the consensus |
+| The same action keeps failing consensus after 3 dispatches | Halt for user input; this is a signal the work needs human direction |
+| Provider CLIs route through the same backend (e.g. both wrap GPT-4 via OpenRouter) | Not actually independent. Consensus prompt MUST go through dispatch.sh with distinct `agent_type` values that map to distinct provider families (codex+gemini, codex+claude, gemini+claude). Two wrappers around the same backend do not count. |
+| Reviewers see stale context (e.g. diff hash drifts during dispatch) | Include a content snapshot identifier in the consensus prompt — for diffs, `git diff HEAD | sha256sum` first ~16 chars; for files, the file's mtime+size. Reviewers must echo the identifier in their response so a context mismatch is detectable. |
+| User invoked autonomous mode and only 1 provider is up | Degraded mode is honored — but autonomous mode itself REMAINS active; only the consensus-required actions block. User can override by leaving autonomous mode and re-invoking with the missing provider restored. |
+
+### What this DOESN'T do
+
+Every exemption below is qualified: **trigger #4 (matrix/contract/capability claim about external system behavior) ALWAYS applies regardless of artifact type**. If the content you're writing makes a verifiable claim about how some external system behaves, no exemption rescues you from consensus.
+
+- Doesn't gate exploratory reads, greps, file inspection — those are information work, not actions.
+- Doesn't gate scratchpad / local-notes / planning-document edits inside `~/.claude/scratchpad/` — **unless** the content hits trigger #4 (a capability/matrix claim drafted in scratchpad before commit IS consensus-required, because the scratchpad draft is the source the committed version copies from).
+- Doesn't gate updates to the user's TaskCreate/TaskUpdate progress markers (that's session state, not an artifact).
+- Doesn't gate filing routine issues (blocker-found-and-continue pattern) — **unless** the issue body hits trigger #9 (capability/matrix claim in the body itself).
+- Doesn't gate typo-only doc fixes — **unless** the "typo fix" is actually editing a behavioral claim, which is trigger #4.
+- Doesn't gate CHANGELOG / RELEASE-notes entries summarizing already-shipped work — **unless** the entry itself encodes a new behavioral/capability claim (e.g. "Now supports X" where X is a new verifiable behavior), which is trigger #4.
+- Doesn't gate version-bump-only manifest commits (literally one line `x.y.z → x.y.z+1`).
+
+### Why this rule, not "verify capability claims"
+
+Earlier wording (GH #15 v1) said "verify capability claims with multi-LLM". That was too narrow and interpretive — "what counts as a capability claim?" is a debate, and a debatable gate is a skippable gate. The action-class trigger list above is mechanical: ask `git status` if uncertain, check what file types are staged, done. No judgment about whether something "counts."
+
+### Cost acknowledgement
+
+Multi-LLM critique on every code commit IS expensive. The user invoking autonomous mode is accepting that cost in exchange for correctness. There is intentionally no "small diff skip" exemption — small diffs were how lestephen.23 shipped the wrong matrix (one 5-line change to the skill banner). Cost is a separate problem; correctness comes first.
 
 ## ⚠️ MANDATORY COMPLIANCE — DO NOT SKIP
 
@@ -251,6 +331,9 @@ You are PROHIBITED from:
 
 - **Halting work to ask the user a question that you could reasonably resolve via judgment + an issue.** The whole point of autonomy is to keep moving.
 - **Bypassing safety/compliance gates** (defensibility-BLOCKED, security HIGH findings, ship critical issues). See precedence section above — these always halt.
+- **Bypassing the consensus-before-action gate** (see "Consensus before action" section). Single-LLM judgment is NOT sufficient for the action classes listed there, even if the action seems obvious. The lestephen.23 wrong-matrix shipped because single-LLM judgment seemed obviously right.
+- **Framing consensus-check prompts leadingly.** Prompts like "Already verified X works; find OTHER bugs" anchor reviewers and waste the consensus check. State the action to be checked neutrally; let providers reach their own conclusions.
+- **Substituting two Claude subagents for multi-LLM consensus.** The point is provider diversity. Two Claude agents are one perspective with two names. The consensus check MUST dispatch to ≥2 distinct provider CLIs.
 - **Batching issues to file at end-of-session.** File at discovery time. By end-of-session you will not remember the specifics.
 - **Filing issues without a concrete "What I'd suggest" section.** "TODO: fix this" is not an actionable issue.
 - **Continuing past a blocker silently.** Always print the `⚠️ Filed issue #N` line so the user can see in scrollback what you decided.
