@@ -5,21 +5,25 @@
     "url": "https://github.com/nyldn"
   },
   "metadata": {
-    "description": "nyldn plugins for Claude Code workflows.",
-    "version": "9.38.0-lestephen.25"
+    "description": "lestephen fork of nyldn/claude-octopus \u2014 bug fixes + knowledge-work skills + autonomous-mode consensus gate.",
+    "version": "9.38.0-lestephen.26",
+    "owner": {
+      "name": "lestephen",
+      "url": "https://github.com/lestephen"
+    }
   },
   "plugins": [
     {
       "name": "octo",
       "source": {
         "source": "url",
-        "url": "https://github.com/nyldn/claude-octopus.git"
+        "url": "https://github.com/lestephen/claude-octopus.git"
       },
-      "description": "Multi-LLM orchestration for Claude Code with agent summaries, prompt-size preflight, research fanout, and Codex-compatible skills. 32 personas, 53 commands, 60 skills. Run /octo:setup.",
-      "version": "9.38.0-lestephen.25",
+      "description": "Fork of nyldn/claude-octopus with bug fixes, knowledge-work skills (defensibility, argument-strength, critique), autonomous-mode consensus gate, and --image vision dispatch primitive. Drop-in plugin-compatible with upstream; install in place of or alongside it. See FORK_PATCHES.md for the per-patch index.",
+      "version": "9.38.0-lestephen.26",
       "author": {
-        "name": "nyldn",
-        "url": "https://github.com/nyldn"
+        "name": "lestephen",
+        "url": "https://github.com/lestephen"
       },
       "repository": "https://github.com/nyldn/claude-octopus",
       "homepage": "https://github.com/nyldn/claude-octopus",
@@ -34,19 +38,25 @@
         "code-review",
         "automation"
       ],
-      "category": "orchestration"
+      "category": "orchestration",
+      "contributors": [
+        {
+          "name": "nyldn (upstream)",
+          "url": "https://github.com/nyldn"
+        }
+      ]
     },
     {
       "name": "img",
       "source": {
         "source": "url",
-        "url": "https://github.com/nyldn/img.git"
+        "url": "https://github.com/lestephen/claude-octopus.git"
       },
-      "description": "Generate and edit images with OpenAI GPT Image 2 and Gemini 3.1 Flash Image Preview.",
+      "description": "Fork of nyldn/claude-octopus with bug fixes, knowledge-work skills (defensibility, argument-strength, critique), autonomous-mode consensus gate, and --image vision dispatch primitive. Drop-in plugin-compatible with upstream; install in place of or alongside it. See FORK_PATCHES.md for the per-patch index.",
       "version": "0.1.0",
       "author": {
-        "name": "nyldn",
-        "url": "https://github.com/nyldn"
+        "name": "lestephen",
+        "url": "https://github.com/lestephen"
       },
       "repository": "https://github.com/nyldn/img",
       "homepage": "https://github.com/nyldn/img",
@@ -58,7 +68,13 @@
         "claude-code-plugin",
         "codex"
       ],
-      "category": "creative"
+      "category": "creative",
+      "contributors": [
+        {
+          "name": "nyldn (upstream)",
+          "url": "https://github.com/nyldn"
+        }
+      ]
     }
   ]
 }

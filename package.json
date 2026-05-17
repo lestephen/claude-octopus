@@ -1,7 +1,7 @@
 {
   "name": "@anthropic-plugins/claude-octopus",
-  "version": "9.38.0-lestephen.25",
-  "description": "Claude Octopus - Multi-AI orchestration plugin for Claude Code. Three brains, one workflow.",
+  "version": "9.38.0-lestephen.26",
+  "description": "Fork of nyldn/claude-octopus \u2014 multi-LLM orchestration plugin with bug fixes, knowledge-work skills, autonomous-mode consensus gate, and --image vision dispatch.",
   "main": "scripts/orchestrate.sh",
   "scripts": {
     "test": "make test",
@@ -45,7 +45,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/nyldn/claude-octopus.git"
+    "url": "https://github.com/lestephen/claude-octopus.git"
   },
   "keywords": [
     "claude",
@@ -58,7 +58,10 @@
     "gemini",
     "multi-ai"
   ],
-  "author": "nyldn",
+  "author": {
+    "name": "lestephen",
+    "url": "https://github.com/lestephen"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18"
@@ -67,5 +70,15 @@
     "access": "public",
     "provenance": true
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "contributors": [
+    {
+      "name": "nyldn (upstream)",
+      "url": "https://github.com/nyldn"
+    }
+  ],
+  "homepage": "https://github.com/lestephen/claude-octopus#readme",
+  "bugs": {
+    "url": "https://github.com/lestephen/claude-octopus/issues"
+  }
 }

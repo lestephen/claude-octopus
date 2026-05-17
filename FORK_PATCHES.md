@@ -1,6 +1,6 @@
 # Fork patches over upstream `nyldn/claude-octopus`
 
-This fork carries 33 commits on top of `upstream/main` (currently at
+This fork carries 34 commits on top of `upstream/main` (currently at
 upstream `v9.38.0`). Patches are maintained on the `lestephen-patches`
 branch and released as `v9.38.0-lestephen.N` tags. Current tag:
 `v9.38.0-lestephen.24`.

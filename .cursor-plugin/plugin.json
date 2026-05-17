@@ -1,13 +1,14 @@
 {
   "name": "claude-octopus",
   "displayName": "Claude Octopus",
-  "description": "Multi-LLM orchestration \u2014 up to 8 providers check each other's work. Research, build, review, and ship with consensus gates.",
-  "version": "9.38.0-lestephen.25",
+  "description": "Fork of nyldn/claude-octopus for Cursor MCP \u2014 multi-LLM orchestration with knowledge-work skills and autonomous-mode consensus gate added. See FORK_PATCHES.md.",
+  "version": "9.38.0-lestephen.26",
   "author": {
-    "name": "nyldn"
+    "name": "lestephen",
+    "url": "https://github.com/lestephen"
   },
-  "homepage": "https://github.com/nyldn/claude-octopus",
-  "repository": "https://github.com/nyldn/claude-octopus",
+  "homepage": "https://github.com/lestephen/claude-octopus#readme",
+  "repository": "https://github.com/lestephen/claude-octopus",
   "license": "MIT",
   "keywords": [
     "multi-llm",
@@ -21,5 +22,11 @@
   ],
   "skills": "./skills/",
   "agents": "./agents/",
-  "commands": "./.cursor-plugin/commands/"
+  "commands": "./.cursor-plugin/commands/",
+  "contributors": [
+    {
+      "name": "nyldn (upstream)",
+      "url": "https://github.com/nyldn"
+    }
+  ]
 }

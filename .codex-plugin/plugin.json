@@ -1,13 +1,14 @@
 {
   "name": "claude-octopus",
-  "version": "9.38.0-lestephen.25",
-  "description": "Multi-LLM orchestration with Double Diamond workflows, provider routing, safety gates, and automation. Dispatches to Codex, Gemini, Copilot, Qwen, Perplexity, OpenRouter, Ollama, and OpenCode from a single plugin.",
+  "version": "9.38.0-lestephen.26",
+  "description": "Fork of nyldn/claude-octopus for Codex CLI \u2014 same multi-LLM orchestration plus knowledge-work skills, autonomous-mode consensus gate, and vision dispatch. See FORK_PATCHES.md.",
   "author": {
-    "name": "nyldn"
+    "name": "lestephen",
+    "url": "https://github.com/lestephen"
   },
   "license": "MIT",
-  "repository": "https://github.com/nyldn/claude-octopus",
-  "homepage": "https://github.com/nyldn/claude-octopus",
+  "repository": "https://github.com/lestephen/claude-octopus",
+  "homepage": "https://github.com/lestephen/claude-octopus#readme",
   "keywords": [
     "multi-llm",
     "multi-agent",
@@ -47,5 +48,11 @@
       "Run a structured debate between AI providers"
     ],
     "brandColor": "#6366F1"
-  }
+  },
+  "contributors": [
+    {
+      "name": "nyldn (upstream)",
+      "url": "https://github.com/nyldn"
+    }
+  ]
 }
