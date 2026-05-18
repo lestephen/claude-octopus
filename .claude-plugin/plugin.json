@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.48",
+  "version": "9.38.0-lestephen.49",
   "description": "Fork of nyldn/claude-octopus \u2014 bug fixes, knowledge-work skills (defensibility, argument-strength, critique), autonomous-mode consensus gate, --image vision dispatch primitive. See FORK_PATCHES.md.",
   "author": {
     "name": "lestephen",
