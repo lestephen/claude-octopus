@@ -173,13 +173,26 @@ The reviewer fleet's mockup-context preamble (in `review.sh`) now includes:
 
 The original Phase 4 canvas-color bug from GH #11's report (`canvas.DEFAULT = '#0e1a24'` vs sampled mockup `#1b2227`) measures deltaE = 5.83 — would have been flagged at the default threshold of 5.0.
 
-## Profile fields (lestephen.33)
+## Profile fields
 
 ```yaml
 visual:
-  delta_e_threshold: 5.0           # CIE76; default 5.0 (matches typical workflows)
-  render_script: ./scripts/render-for-review.sh  # optional, for rendered-vs-mockup checks
+  delta_e_threshold: 5.0           # (lestephen.33) CIE76; default 5.0
+  render_script: ./scripts/render-for-review.sh  # (lestephen.33) optional, for rendered-vs-mockup checks
+  preexisting_pass: false          # (lestephen.38, default false) opt in to noisier defense-in-depth
+                                   # pass: reviewers also flag contradictions in CURRENT file state
+                                   # against the reference, not just in the diff. Findings tagged
+                                   # 'visual-preexisting-divergence' severity 'nit'.
 ```
+
+## Preamble coverage (what reviewers are now asked)
+
+Per petrics dogfood feedback (GH #22), the preamble covers FOUR categories of question, not just code-internal correctness:
+
+1. **Visual fidelity** (token sampling vs mockup pixels) — categories `visual-divergence`, `visual-coord-unverified`, `visual-token-comment-mismatch`
+2. **Product semantics** — categories `product-semantics-unclear`, `product-redundant-affordance`, `visual-proportion-divergence`. Asks: what does this datum mean in 2 seconds? Is this affordance redundant? Does the rendered proportion match the mockup?
+3. **Rendered divergence** — category `rendered-divergence` (requires `render_script`)
+4. **Pre-existing state** (opt-in via `visual.preexisting_pass: true`) — category `visual-preexisting-divergence` severity `nit`. Catches divergences in code that wasn't touched by the diff.
 
 The render_script (when set) must be executable and end its stdout with the absolute path to the produced screenshot — see `scripts/helpers/render_diff.sh` header for the contract.
 

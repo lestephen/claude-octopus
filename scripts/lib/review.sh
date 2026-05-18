@@ -386,9 +386,16 @@ review_run() {
     # Without these, the cheap leg from .23 still applies — preamble only.
     # With them, reviewers are instructed to actually CALL the tools per
     # token, closing the "no tool means eyeballing" gap from team feedback.
-    local visual_delta_e_threshold visual_render_script
+    local visual_delta_e_threshold visual_render_script visual_preexisting_pass
     visual_delta_e_threshold=$(echo "$profile_json" | jq -r '.visual.delta_e_threshold // 5.0')
     visual_render_script=$(echo "$profile_json"     | jq -r '.visual.render_script    // ""')
+    # lestephen.38 (closes GH #22): opt-in flag to run a pre-existing-state
+    # pass — reviewers sample the reference artifact for any visible feature
+    # and flag contradictions in current file state (NOT just the diff).
+    # Default false because it's noisier; petrics opted in for defense-in-depth
+    # against pre-existing divergences (Pixi bg literal that was wrong before
+    # the diff but only surfaced when reviewing rendered output).
+    visual_preexisting_pass=$(echo "$profile_json" | jq -r '.visual.preexisting_pass // false')
     if [[ "$target" == "fresh" ]]; then
         target="working-tree"
         history="fresh"
@@ -689,6 +696,57 @@ review_run() {
         local _render_script_q=""
         [[ -n "$visual_render_script" ]] && _render_script_q=$(printf '%q' "$visual_render_script")
         local _tool_protocol=""
+        # Q3 (proportion) gated on render_script; Q4 (pre-existing) gated on
+        # visual.preexisting_pass. Both are "question without measurement
+        # anchor" failure modes if emitted ungated — claude SEV-2 v1/v2 GH #22.
+        local _q3_block _q4_block _category_distinction
+        if [[ -n "$visual_render_script" ]]; then
+            _q3_block="3. DOES THE RENDERED PROPORTION MATCH the reference artifact's proportion?
+   render_script is set in this profile, so the comparison is grounded.
+   Methodology:
+   - Run render_diff.sh (see TOOLS block) to get a screenshot
+   - For named UI regions (sprite, header, sidebar, card), eyeball the
+     proportion of the viewport each occupies in rendered vs. mockup
+   - If the proportion delta is >20%, flag. Concrete example: petrics
+     PR-25 pet sprite was ~50% of stage area in rendered but ~30% in
+     mockup (delta=20pp, ~67%-of-mockup) → flag.
+   Category: 'visual-proportion-divergence', severity 'normal'."
+            _q3_distinction="- visual-proportion-divergence → resize the rendered element"
+        else
+            _q3_block="3. (PROPORTION CHECK skipped — no render_script in this profile.
+   Setting visual.render_script enables comparing rendered viewport
+   proportions to the mockup; without it the comparison would be
+   speculative and ungrounded. Tracking: GH #21.)"
+            _q3_distinction=""
+        fi
+        if [[ "$visual_preexisting_pass" == "true" ]]; then
+            _q4_block="4. WHAT PRE-EXISTING CODE STATE is contradicted by the reference artifact?
+   - Outside the diff. Mostly catches things the diff implementer
+     inherited and didn't realize were wrong. Example: Pixi.js canvas
+     init uses literal 0x0d1117 (in code untouched by THIS diff) but
+     mockup canvas region samples #1b2227. Pre-existing palette mismatch
+     that the diff doesn't fix and the team may not know about.
+   - The PRE-EXISTING STATE PASS block below gives sampling methodology.
+   - Surface so user can decide whether to widen scope.
+   - Category: 'visual-preexisting-divergence', severity 'nit'."
+            _q4_distinction="- visual-preexisting-divergence → fix pre-existing token (may widen scope)"
+        else
+            _q4_block="4. (PRE-EXISTING STATE check skipped — visual.preexisting_pass not
+   enabled in this profile. Enable with visual.preexisting_pass=true to
+   surface divergences in code the diff doesn't touch. Default-off
+   because the findings are 'nit'-severity and add review noise that
+   not every project wants.)"
+            _q4_distinction=""
+        fi
+        # Build CATEGORY DISTINCTION dynamically so it only lists categories
+        # whose questions are actually active in this dispatch.
+        _category_distinction="CATEGORY DISTINCTION (don't collapse — each maps to a different action):
+- product-semantics-unclear → reword the label/value/unit
+- product-redundant-affordance → remove one of the duplicates"
+        [[ -n "$_q3_distinction" ]] && _category_distinction="${_category_distinction}
+${_q3_distinction}"
+        [[ -n "$_q4_distinction" ]] && _category_distinction="${_category_distinction}
+${_q4_distinction}"
         if [[ "$_ref_kind" == "image mockup" ]]; then
             _tool_protocol="
 TOOLS YOU SHOULD CALL (per-token, not just per-review):
@@ -755,7 +813,66 @@ WHAT TO FLAG:
 - Comment claims sampling at (x,y) but actual sample differs from code
   value → 'visual-token-comment-mismatch'.
 - Code uses 0x-literal that is code-internally consistent but diverges
-  from rendered output → 'rendered-divergence' (requires render_script)."
+  from rendered output → 'rendered-divergence' (requires render_script).
+
+PRODUCT SEMANTICS — lestephen.38 (closes GH #22 petrics-feedback). The
+visual-fidelity checks above catch palette/coord divergence but miss
+structural / product-design issues that shipped past prior reviews.
+Categories are distinct — don't collapse them. Each has a worked
+example from petrics PR-25 (the calibration case).
+
+1. WHAT DOES THIS DATUM MEAN to a user looking at the device for 2 seconds?
+   Concrete worked examples (all petrics PR-25 actuals):
+   - 'Mood: 50%' → MEANING UNCLEAR: percentages map intuitively to
+     batteries/progress/completion, not to moods. Flag.
+   - 'Chats: 7' → MEANING UNCLEAR: 7 what? unread? total? pinned?
+     active in last hour? The bare number with a category label leaves
+     intent ambiguous. Flag.
+   - 'Focus task: 84%' → MEANING UNCLEAR: tasks aren't %-done; sessions
+     or projects are. The framing reuses a unit that doesn't apply to
+     the noun. Flag.
+   - 'Battery: 50%' → CLEAR: standard idiom; no flag.
+   - 'Steps: 7,243' → CLEAR: count with implied 'today' from app context.
+   Category: 'product-semantics-unclear', severity 'normal'.
+
+2. IS THIS AFFORDANCE REDUNDANT with another part of the visible UI?
+   Concrete worked examples:
+   - An on-screen 'F1 / F2 / F3 / Action' footer row INSIDE the kiosk
+     screen that duplicates the device's physical button bezel (petrics
+     PR-25 actual). Flag with: which is canonical (physical), which is
+     noise (on-screen). Category: 'product-redundant-affordance'.
+   - Two cards both showing the same 'last sync time' with slightly
+     different formatting. Flag the duplicate.
+   - A 'Settings' gear in the header AND a 'Settings' tab in the footer.
+     Flag if both navigate to the same destination.
+   Category: 'product-redundant-affordance', severity 'normal'.
+
+${_q3_block}
+
+${_q4_block}
+
+${_category_distinction}"
+
+            # Optional pre-existing state pass — gated on opt-in flag because
+            # it's noisier (more low-sev findings to triage). Closes GH #22
+            # ask (2) with the proposed visual.preexisting_pass profile flag.
+            if [[ "$visual_preexisting_pass" == "true" ]]; then
+                _tool_protocol="${_tool_protocol}
+
+PRE-EXISTING STATE PASS (enabled via visual.preexisting_pass=true):
+Beyond the diff: sample the reference artifact for any visible feature
+you can name (color tokens, layout regions, key typography, character
+proportions). For each, locate the corresponding token/literal/component
+in the CURRENT file state (not just the diff). If you find a contradiction,
+flag it with category 'visual-preexisting-divergence', severity 'nit'.
+The user may not have realized something pre-existing is wrong.
+
+Examples of the kind of finding this surfaces (petrics PR-25 case):
+- Pixi.js canvas background uses literal 0x0d1117 (in canvas init code,
+  not in the diff) but mockup canvas region samples #1b2227 — pre-
+  existing palette mismatch.
+- Component import paths reference a deleted icon set."
+            fi
         fi
 
         reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.33):
