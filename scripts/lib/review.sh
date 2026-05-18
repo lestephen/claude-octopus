@@ -259,6 +259,66 @@ review_collect_diff() {
     printf '%s' "$diff_content"
 }
 
+# review_collect_intent: resolves a review target to "stated intent" text
+# (commit messages for branch, PR body for PR-id). Used by the instruction-
+# fidelity check to detect diff-direction inversions vs the implementer's
+# own description of what they were doing.
+#
+# lestephen.47 (closes GH #26 — petrics PR-25 instruction-fidelity gap):
+# the implementer agent shipped scaled-DOWN when the user asked for
+# scaled-UP. The fleet saw the diff but not the originating instruction.
+# Surfacing commit messages + PR body lets the reviewer compare stated
+# direction vs diff direction.
+#
+# Returns empty for staged / working-tree / pathspec targets (no
+# durable intent text exists yet; the user hasn't committed).
+review_collect_intent() {
+    local target="$1"
+    local base="${2:-}"
+    local intent=""
+
+    case "$target" in
+        branch)
+            # Resolve effective base the same way review_collect_diff does;
+            # don't duplicate the resolution logic — instead delegate via a
+            # narrow helper. For simplicity, repeat the lookup here so this
+            # function is self-contained.
+            local _eff_base="$base"
+            [[ -z "$_eff_base" ]] && _eff_base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+            [[ -z "$_eff_base" ]] && git rev-parse --verify --quiet origin/main >/dev/null && _eff_base="origin/main"
+            [[ -z "$_eff_base" ]] && git rev-parse --verify --quiet main >/dev/null && _eff_base="main"
+            [[ -z "$_eff_base" ]] && return 0
+            # %B = subject+body; %n separates messages. Limit to 50 commits
+            # (anything beyond is probably a stale branch and noise).
+            intent=$(git log "$_eff_base..HEAD" --pretty=format:'--- commit %h ---%n%B' -n 50 2>/dev/null || true)
+            ;;
+        [0-9]*)
+            # gh pr view returns title + body; both can contain instruction
+            # language. Title alone is often too terse; body is where users
+            # write "user asked for X to be larger" prose.
+            local _title _body
+            _title=$(gh pr view "$target" --json title --jq '.title' 2>/dev/null || true)
+            _body=$(gh pr view "$target" --json body --jq '.body' 2>/dev/null || true)
+            if [[ -n "$_title" || -n "$_body" ]]; then
+                intent=$(printf 'PR title: %s\n\nPR body:\n%s' "$_title" "$_body")
+            fi
+            ;;
+        *)
+            # staged / working-tree / pathspec: no durable intent exists.
+            return 0
+            ;;
+    esac
+
+    # Cap at 8000 chars to keep prompt cost bounded; truncate with a marker
+    # so reviewers know they got a partial picture.
+    if [[ ${#intent} -gt 8000 ]]; then
+        intent="${intent:0:8000}
+
+[... intent text truncated at 8000 chars for prompt cost; see git log / PR body for full ...]"
+    fi
+    printf '%s' "$intent"
+}
+
 # review_run: canonical 3-round multi-LLM code review pipeline
 # WHY: replaces the single-model "codex exec review" dispatch with a
 # v9.0: Provider report card — prints post-run summary of provider status
@@ -575,6 +635,16 @@ review_run() {
             [[ -z "$pattern" ]] && continue
             diff_content=$(echo "$diff_content" | grep -v "$pattern" || true)
         done <<< "$REVIEW_SKIP_PATTERNS"
+    fi
+
+    # ── Stated intent (lestephen.47, closes GH #26) ──────────────────────────
+    # Collect commit messages / PR body so reviewers can detect
+    # instruction-fidelity inversions (diff that decreases something the
+    # description claims to increase, etc). Empty for staged/working-tree.
+    local stated_intent=""
+    stated_intent=$(review_collect_intent "$target" "$base" 2>/dev/null || true)
+    if [[ -n "$stated_intent" ]]; then
+        log INFO "review_run: collected stated_intent (${#stated_intent} chars)"
     fi
 
     # ── Round-aware PR review state (#322) ───────────────────────────────────
@@ -916,6 +986,40 @@ REQUIRED BEHAVIOR — apply BEFORE evaluating code-internal consistency:
 "
     fi
 
+    # lestephen.47 (closes GH #26): instruction-fidelity preamble — only
+    # included when we collected stated_intent (branch / PR-id targets).
+    # Pure preamble add for staged/working-tree (no intent text exists).
+    local _instruction_fidelity_block=""
+    if [[ -n "$stated_intent" ]]; then
+        _instruction_fidelity_block="STATED INTENT (commit messages / PR body):
+\`\`\`
+${stated_intent}
+\`\`\`
+
+INSTRUCTION-FIDELITY CHECK (lestephen.47, closes GH #26 — petrics PR-25):
+The implementer's own description above names what the diff is meant to do.
+The diff is the ACTUAL change shipped. When the description claims a
+directional change (\"make X larger\", \"reduce Y\", \"add N more\",
+\"+10%\", \"smaller than\", \"more than\"), verify the diff moves in the
+stated direction.
+
+Pattern to detect: diff decreases a metric while description claims an
+increase (or vice versa). Worked example from petrics PR-25:
+  Description: \"the pet in our mockup is smaller than the one in the
+                grounding mockup\" (implies make pet LARGER to match)
+  Actual diff: \`pet.scale: 0.6 → 0.4\` (made it SMALLER)
+  → INVERSION. Category: 'instruction-inversion', severity 'normal'.
+
+Only flag when there is a CONCRETE directional claim and a CONCRETE
+directional diff to compare. Do NOT flag:
+  - Subjective claims (\"improve\", \"polish\", \"refactor\")
+  - Aspirational language without measurable direction
+  - Cases where the diff and description AGREE
+  - Cases where the description names multiple changes and only some
+    appear in this diff (split-commit / part-of-series is normal)
+"
+    fi
+
     local agent_prompt_base
     agent_prompt_base="You are a code reviewer. Review the following diff and return ONLY a JSON object with a 'findings' array.
 
@@ -926,7 +1030,7 @@ Severity guide:
 - nit: minor issue, not blocking (yellow)
 - pre-existing: bug not introduced by this PR (purple)
 
-${reference_preamble}${review_context}
+${reference_preamble}${_instruction_fidelity_block}${review_context}
 ${review_history_context}
 ${graphify_context}
 
@@ -1043,7 +1147,9 @@ ${agent_prompt_base}"
     # the diff" — defeating the cheapest leg of GH #11.
     verifier_prompt="You are a code review verifier. For each finding below, check whether it is a real bug (confirmed), a false positive, or needs debate (uncertain/conflicting).
 
-${reference_preamble}When verifying visual-fidelity findings tagged 'visual-divergence' or 'visual-unverified': do NOT downgrade or drop them solely because the diff lacks evidence — the diff WOULD lack evidence; the reference artifact is the source of truth. Inspect the reference (you can read the path) and confirm the divergence yourself.
+${reference_preamble}${_instruction_fidelity_block}When verifying visual-fidelity findings tagged 'visual-divergence' or 'visual-unverified': do NOT downgrade or drop them solely because the diff lacks evidence — the diff WOULD lack evidence; the reference artifact is the source of truth. Inspect the reference (you can read the path) and confirm the divergence yourself.
+
+When verifying 'instruction-inversion' findings (lestephen.47 — petrics PR-25 class): the evidence lives in the STATED INTENT block above (commit message / PR body) compared against the diff direction. Do NOT downgrade or drop these solely because the diff lacks evidence — the diff IS the alleged inversion; the intent text is what proves it. If the Round-1 reviewer cited a directional claim from the intent block and a counter-direction in the diff, verify the pair mechanically before downgrading.
 
 Return ONLY JSON: same findings array with an added 'verdict' field: confirmed|false-positive|needs-debate.
 Also add 'pre_existing_newly_reachable': true if a pre-existing finding becomes reachable via this PR changes.
