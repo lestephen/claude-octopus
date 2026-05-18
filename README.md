@@ -35,24 +35,74 @@ Note the names — they're different on purpose:
 
 The marketplace pin updates automatically on every fork release via CI (see `.github/workflows/update-marketplace.yml`), so `octo@lestephen-octo` always tracks the latest `v9.38.0-lestephen.N` tag.
 
-### Development install (this repo is the source, not a marketplace)
+### Development install (replace the cached install with a symlink to your working tree)
 
-This repo itself is the plugin source, NOT a Claude Code marketplace. If you want to develop against a local checkout (and have your changes reflected immediately without re-publishing), clone outside the plugin path and symlink in:
+There's no one-shot "dev install" command — Claude Code's plugin system fetches from the marketplace into a versioned cache directory, and `~/.claude-octopus/plugin` is the plugin's *own* internal self-resolution path (used by `bin/octo-consensus`, `setup.md`, etc.), NOT a path Claude Code discovers automatically.
+
+The honest dev workflow:
 
 ```bash
-# Clone the source outside the plugin path
+# 1. Install via the marketplace at least once so Claude Code registers
+#    the plugin and creates the cache directory it dispatches from.
+#    Inside Claude Code:
+#        /plugin marketplace add lestephen/claude-octopus-marketplace
+#        /plugin install octo@lestephen-octo
+
+# 2. Clone the source outside the cache so your edits don't get blown
+#    away by /plugin update.
 mkdir -p ~/source
 git clone https://github.com/lestephen/claude-octopus ~/source/claude-octopus
 
-# Remove any pre-existing plugin dir (incl. empty one /octo:setup may have
-# created), then symlink. `rmdir` is safe — it only deletes EMPTY dirs;
-# if something non-empty is there, deal with it manually before continuing.
-mkdir -p ~/.claude-octopus
-rmdir ~/.claude-octopus/plugin 2>/dev/null || true
-ln -sfn ~/source/claude-octopus ~/.claude-octopus/plugin
+set -euo pipefail   # fail loudly if anything goes wrong
+
+# 3. Resolve Claude Code's active install path from its install record.
+#    The schema looks like:
+#      {"plugins": {"octo@lestephen-octo": [
+#         {"scope":"user","installPath":"/home/<u>/.claude/plugins/cache/lestephen-octo/octo/9.38.0",
+#          "version":"9.38.0","lastUpdated":"…"}, ...]}}
+#    Multiple entries can exist (after upgrades, or project + user scope);
+#    pick the most recently updated to match what Claude Code dispatches to.
+CACHED=$(jq -r '
+    .plugins["octo@lestephen-octo"]
+    | sort_by(.lastUpdated)
+    | last
+    | .installPath
+  ' "$HOME/.claude/plugins/installed_plugins.json")
+if [[ -z "$CACHED" || "$CACHED" == "null" ]]; then
+    echo "ERROR: octo@lestephen-octo not in installed_plugins.json — did step 1 succeed?" >&2
+    exit 1
+fi
+echo "Cached install: $CACHED"  # e.g. /home/<u>/.claude/plugins/cache/lestephen-octo/octo/9.38.0
+
+# 4. Replace the cached install with a symlink to your working tree.
+#    Now any edit in $HOME/source/claude-octopus is live for /octo:* commands.
+#    Explicit rm exit-check; set -e at top also catches it.
+rm -rf "$CACHED" || { echo "ERROR: failed to remove $CACHED (busy?)" >&2; exit 1; }
+ln -s "$HOME/source/claude-octopus" "$CACHED"
+
+# 5. ALSO symlink the plugin's self-resolution path. Some plugin scripts
+#    (bin/octo-consensus, image-attach.sh source path, setup.md install
+#    hints) expect this exact location independent of Claude Code's cache.
+mkdir -p "$HOME/.claude-octopus"
+TARGET="$HOME/.claude-octopus/plugin"
+if [[ -L "$TARGET" ]]; then
+    rm -f "$TARGET"                          # existing symlink — safe to replace
+elif [[ -d "$TARGET" ]]; then
+    if [[ -z "$(ls -A "$TARGET")" ]]; then
+        rmdir "$TARGET"                      # empty dir — safe to replace
+    else
+        echo "ERROR: $TARGET exists as a non-empty directory. Inspect and remove manually before continuing:" >&2
+        ls -la "$TARGET" >&2
+        exit 1
+    fi
+fi
+ln -s "$HOME/source/claude-octopus" "$TARGET"
 ```
 
-(The `rmdir` step matters: without it, `ln -s` into an existing directory creates a nested symlink at `~/.claude-octopus/plugin/claude-octopus → …` instead of replacing the dir. `ln -sfn` then forces overwrite if the target is a non-directory symlink. `git clone <repo> ~/.claude-octopus/plugin` directly fails because that path already exists for the same reason.)
+**Gotchas:**
+- **`/plugin update` will clobber the symlink.** Running it deletes the cache dir and re-pulls from the marketplace tag — you'll be back to a real copy of the pinned version. Re-do step 4 after any `/plugin update` if you want to keep editing live. Step 3's `installPath` lookup will then point at the new version subdir if Claude Code updated the version.
+- **The version subdir is the BASE version (`9.38.0`), not the fork suffix (`-lestephen.35`).** Resolve via the `installed_plugins.json` lookup in step 3 — don't hardcode.
+- **Both symlinks needed.** Claude Code finds the plugin via the path in `installed_plugins.json`; the plugin's own scripts find themselves via `~/.claude-octopus/plugin`. The two-symlink dance covers both.
 
 After either install path, run `/octo:setup` (inherited from upstream) for the guided provider/auth wizard.
 
