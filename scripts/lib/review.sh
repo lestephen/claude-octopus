@@ -541,6 +541,51 @@ review_run() {
         fi
     fi
 
+    # ── Render_script leg (lestephen.47, closes GH #27) ──────────────────────
+    # When visual.render_script is set, run it BEFORE dispatch and attach the
+    # resulting screenshot as a SECOND image alongside the mockup reference.
+    # Petrics PR-25 mapped 3/11 divergences as requiring this leg:
+    # proportion checks (stage size, glow ellipses, sprite-vs-stage) that
+    # can only be answered by comparing actual rendered output to the mockup.
+    # Previously the preamble TOLD reviewers to run render_diff.sh themselves;
+    # in practice they didn't, because per-turn process orchestration is
+    # high-overhead and the result file format wasn't being preserved.
+    local rendered_screenshot=""
+    if [[ -n "$visual_render_script" && -n "${OCTO_AGENT_IMAGES:-}" ]]; then
+        local _render_helper="${SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")/..}/helpers/render_diff.sh"
+        # Walk up to find the plugin's helpers/ dir robustly. scripts/lib/review.sh
+        # → scripts/helpers/render_diff.sh.
+        if [[ ! -x "$_render_helper" ]]; then
+            _render_helper="$(dirname "${BASH_SOURCE[0]}")/../helpers/render_diff.sh"
+        fi
+        if [[ -x "$_render_helper" ]]; then
+            log "INFO" "review_run: running render_script $visual_render_script via $_render_helper"
+            local _render_out _render_rc
+            # Capture stdout only; the helper guarantees the screenshot path is
+            # the LAST stdout line (per render_diff.sh contract).
+            _render_out=$(bash "$_render_helper" "$visual_render_script" 2>/dev/null) && _render_rc=0 || _render_rc=$?
+            if [[ "$_render_rc" -eq 0 && -n "$_render_out" ]]; then
+                # Last non-empty line of stdout is the screenshot path.
+                rendered_screenshot=$(printf '%s\n' "$_render_out" | awk 'NF{last=$0} END{print last}')
+                if [[ -f "$rendered_screenshot" && -s "$rendered_screenshot" ]]; then
+                    # Append to OCTO_AGENT_IMAGES (newline-separated). The
+                    # fleet sees BOTH mockup and rendered output side-by-side.
+                    export OCTO_AGENT_IMAGES="${OCTO_AGENT_IMAGES}
+${rendered_screenshot}"
+                    log "INFO" "review_run: attached rendered screenshot: $rendered_screenshot"
+                else
+                    log "WARN" "review_run: render_diff.sh reported path='$rendered_screenshot' but file missing/empty; proceeding with mockup-only"
+                    rendered_screenshot=""
+                fi
+            else
+                log "WARN" "review_run: render_diff.sh exited rc=$_render_rc; proceeding with mockup-only"
+                rendered_screenshot=""
+            fi
+        else
+            log "WARN" "review_run: render_diff.sh helper not found at $_render_helper; cannot exercise render_script leg"
+        fi
+    fi
+
     # v9.0: Provider status tracking for post-run report card
     local provider_status_file
     provider_status_file=$(mktemp "${TMPDIR:-/tmp}/octopus-provider-status.XXXXXX")
@@ -784,18 +829,66 @@ review_run() {
         # visual.preexisting_pass. Both are "question without measurement
         # anchor" failure modes if emitted ungated — claude SEV-2 v1/v2 GH #22.
         local _q3_block _q4_block _category_distinction
-        if [[ -n "$visual_render_script" ]]; then
+        if [[ -n "$visual_render_script" && -n "$rendered_screenshot" ]]; then
+            # lestephen.47 (closes GH #27): render_script ran successfully
+            # PRE-DISPATCH. Both mockup and rendered screenshot are attached
+            # to OCTO_AGENT_IMAGES so reviewers see them side-by-side without
+            # having to orchestrate the render themselves.
+            local _rendered_q
+            _rendered_q=$(printf '%q' "$rendered_screenshot")
             _q3_block="3. DOES THE RENDERED PROPORTION MATCH the reference artifact's proportion?
-   render_script is set in this profile, so the comparison is grounded.
-   Methodology:
-   - Run render_diff.sh (see TOOLS block) to get a screenshot
-   - For named UI regions (sprite, header, sidebar, card), eyeball the
-     proportion of the viewport each occupies in rendered vs. mockup
-   - If the proportion delta is >20%, flag. Concrete example: petrics
-     PR-25 pet sprite was ~50% of stage area in rendered but ~30% in
-     mockup (delta=20pp, ~67%-of-mockup) → flag.
-   Category: 'visual-proportion-divergence', severity 'normal'."
-            _q3_distinction="- visual-proportion-divergence → resize the rendered element"
+   render_script ran successfully BEFORE dispatch — both images are
+   attached: mockup (${_ref_basename}) AND rendered output
+   ($(basename "$rendered_screenshot")). Both viewable in your context.
+
+   Concrete methodology (deterministic, not eyeballing):
+   - Identify named UI regions present in BOTH images (sprite, header,
+     sidebar, card, footer). For each:
+     a. In the mockup, locate the bounding-box corners. Two pixel coords
+        suffice: top-left (x1,y1) and bottom-right (x2,y2).
+     b. In the rendered output, find the same region. Note its bounding
+        box at the rendered viewport.
+     c. Compare aspect ratio (w/h) and viewport-fraction
+        (region-area / image-area). If EITHER differs by >20%, flag.
+   - For HARDCODED ELEMENT SIZES in the diff (literal pixel values,
+     percentages, em/rem with multipliers), verify by sampling: do those
+     literals produce the rendered proportion that matches the mockup?
+   - Concrete example (petrics PR-25):
+     * Mockup: pet sprite occupies ~30% of stage area (visual-fraction).
+     * Rendered: pet sprite occupies ~50% of stage area.
+     * Delta = 20pp / ~67% of mockup → FLAG.
+     * Diff likely has \`pet.scale: 0.6\` (or similar literal) that drives
+       the rendered size; the literal needs to be reduced.
+   - For DEPENDENT/RELATIVE sizes (glow ellipses sized to a parent
+     element, anchors relative to viewport): if the parent changed and the
+     child didn't track, the child will look out-of-proportion in
+     rendered but not in mockup. Petrics PR-25 example: platform glow
+     ellipses sized for prior pet scale, didn't auto-track.
+
+   Categories (pick the most specific):
+   - 'visual-proportion-divergence' (severity 'normal'): named region's
+     proportion differs >20% between mockup and rendered.
+   - 'rendered-divergence' (severity 'normal'): rendered pixel sample
+     at a coord differs from mockup sample at same coord by deltaE >
+     ${visual_delta_e_threshold} — catches Tailwind-compilation /
+     GL-color-literal / alpha-compositing pipeline divergence that
+     token-only inspection misses.
+
+   Sample BOTH images at the same coord to detect rendered-pipeline
+   divergence (use sample_pixel.py once per image):
+     python3 ${_plugin_dir_q}/scripts/helpers/sample_pixel.py ${_ref_q} <x> <y>
+     python3 ${_plugin_dir_q}/scripts/helpers/sample_pixel.py ${_rendered_q} <x> <y>"
+            _q3_distinction="- visual-proportion-divergence → resize the rendered element / track parent scale
+- rendered-divergence → pipeline issue (compilation, specificity, alpha, GL literal)"
+        elif [[ -n "$visual_render_script" ]]; then
+            # render_script was configured but render_diff.sh failed at
+            # pre-dispatch time. Surface to the reviewer so they know the
+            # rendered-output comparison won't be possible this run.
+            _q3_block="3. (PROPORTION CHECK degraded — render_script was configured but
+   render_diff.sh failed at dispatch time. See /octo:doctor and the
+   review log for diagnostics. Falling back to mockup-only inspection;
+   rendered-divergence findings cannot be made this run.)"
+            _q3_distinction=""
         else
             _q3_block="3. (PROPORTION CHECK skipped — no render_script in this profile.
    Setting visual.render_script enables comparing rendered viewport
