@@ -23,8 +23,29 @@ Run a SINGLE comprehensive check:
 ```bash
 echo "=== Provider Detection ==="
 printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo installed || echo missing)"
-printf "codex_auth:%s\n" "$(codex --version >/dev/null 2>&1 && echo ok || echo none)"
+# codex_auth: match orchestrate.sh detect-providers logic (OAuth file OR
+# OPENAI_API_KEY env var). lestephen.41 (closes GH #24): was previously
+# `codex --version` which only proves the binary runs — that lied
+# "ok" even when unauthenticated, then detect-providers later said "none"
+# and the user saw a confusing mismatch.
+if [[ -f "$HOME/.codex/auth.json" ]]; then
+  printf "codex_auth:oauth\n"
+elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  printf "codex_auth:api-key\n"
+else
+  printf "codex_auth:none\n"
+fi
 printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo installed || echo missing)"
+# gemini_auth: was previously missing entirely from the initial scan
+# (lestephen.41 closes GH #24). Mirror detect-providers' OAuth + env
+# var checks so the wizard's first-pass status is honest.
+if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+  printf "gemini_auth:oauth\n"
+elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+  printf "gemini_auth:api-key\n"
+else
+  printf "gemini_auth:none\n"
+fi
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo configured || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo installed || echo missing)"
 printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo installed || echo missing)"
@@ -300,14 +321,17 @@ for (const p of DETECTED_PROVIDERS) {
 For each provider the user disables, run (verified-existing `provider` subcommand from lestephen.15):
 
 ```bash
-bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider disable "${provider_name}"
+OCTOPUS_SETUP_IN_PROGRESS=1 bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider disable "${provider_name}"
 # (omit --project — defaults to --user, persisting to ~/.claude-octopus/config/providers.json)
+# OCTOPUS_SETUP_IN_PROGRESS=1 suppresses the "🐙 First time?" hint that
+# would otherwise tell the user to run /octo:setup while inside it
+# (lestephen.41, closes GH #23).
 ```
 
 To re-enable later:
 
 ```bash
-bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider enable "${provider_name}"
+OCTOPUS_SETUP_IN_PROGRESS=1 bash "${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh" provider enable "${provider_name}"
 ```
 
 Print a summary at the end of this step:
@@ -446,7 +470,8 @@ If the output is `plugin-root:missing`, stop and ask the user to reinstall via:
 
 
 ```bash
-${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh detect-providers
+OCTOPUS_SETUP_IN_PROGRESS=1 ${HOME}/.claude-octopus/plugin/scripts/orchestrate.sh detect-providers
+# Wizard-internal call: suppresses first-run hint (lestephen.41, GH #23).
 ```
 
 Show final summary:

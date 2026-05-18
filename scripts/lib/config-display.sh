@@ -859,6 +859,14 @@ setup_wizard() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 check_first_run() {
+    # Suppress the "🐙 First time?" hint when the user is already inside the
+    # configuration wizard. The wizard exports OCTOPUS_SETUP_IN_PROGRESS=1
+    # before invoking provider/detect-providers subcommands from its own flow
+    # (lestephen.41, closes GH #23). Without this, the hint tells the user to
+    # run the wizard while they're literally in the middle of it.
+    if [[ "${OCTOPUS_SETUP_IN_PROGRESS:-0}" == "1" ]]; then
+        return 0
+    fi
     if [[ ! -f "$SETUP_CONFIG_FILE" ]]; then
         # Codex auth: either env var OR ~/.codex/auth.json (the `codex login`
         # default). Mirrors doctor_check_auth at lib/doctor.sh:347.

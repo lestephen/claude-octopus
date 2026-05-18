@@ -75,7 +75,12 @@ cmd_detect_providers() {
         echo "GEMINI_STATUS=ok"
         if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
             echo "GEMINI_AUTH=oauth"
-        elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
+        elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+            # GOOGLE_API_KEY is gemini-cli's second supported env var per
+            # https://github.com/google-gemini/gemini-cli. lestephen.41
+            # (closes GH #24): live-echo only checked GEMINI_API_KEY but
+            # the cache-write branch below (and check_first_run) accept
+            # GOOGLE_API_KEY — divergence was a false-negative source.
             echo "GEMINI_AUTH=api-key"
         else
             echo "GEMINI_AUTH=none"
@@ -189,9 +194,30 @@ cmd_detect_providers() {
     # Write to cache
     mkdir -p "$WORKSPACE_DIR"
     local codex_status=$(command -v codex &>/dev/null && echo "ok" || echo "missing")
-    local codex_auth=$([[ -f "$HOME/.codex/auth.json" ]] && echo "oauth" || [[ -n "${OPENAI_API_KEY:-}" ]] && echo "api-key" || echo "none")
+    # lestephen.41 (closes GH #24): the prior `A && B || C && D || E`
+    # ternary chain had a classic bash precedence bug. When the OAuth
+    # file existed, `B` (echo "oauth") returned rc=0, then `C` was
+    # skipped — BUT `D` (echo "api-key") still ran because the chain's
+    # rc was 0. Result: codex_auth captured "oauth\napi-key" and the
+    # cache file got a junk `api-key` line. Replaced with explicit
+    # if/elif/else.
+    local codex_auth
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+        codex_auth="oauth"
+    elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        codex_auth="api-key"
+    else
+        codex_auth="none"
+    fi
     local gemini_status=$(command -v gemini &>/dev/null && echo "ok" || echo "missing")
-    local gemini_auth=$([[ -f "$HOME/.gemini/oauth_creds.json" ]] && echo "oauth" || [[ -n "${GEMINI_API_KEY:-}" ]] && echo "api-key" || echo "none")
+    local gemini_auth
+    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+        gemini_auth="oauth"
+    elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        gemini_auth="api-key"
+    else
+        gemini_auth="none"
+    fi
     local perplexity_status=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "ok" || echo "not-configured")
     local perplexity_auth=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "api-key" || echo "none")
     local ollama_status=$(command -v ollama &>/dev/null && { curl -sf http://localhost:11434/api/tags &>/dev/null && echo "running" || echo "stopped"; } || echo "not-installed")
