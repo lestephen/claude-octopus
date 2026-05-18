@@ -1385,7 +1385,14 @@ save_user_config() {
     local has_openai="false"
     local has_gemini="false"
     [[ -f "$HOME/.codex/auth.json" || -n "${OPENAI_API_KEY:-}" ]] && has_openai="true"
-    [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]] && has_gemini="true"
+    # lestephen.50 (closes GH #28): centralized gemini auth resolution via
+    # octo_resolve_gemini_auth (defined in lib/preflight.sh, sourced
+    # earlier at line ~118). Allowlist check via octo_gemini_dispatch_allowed
+    # so stale-blob is correctly excluded.
+    if declare -f octo_resolve_gemini_auth >/dev/null 2>&1 \
+       && octo_gemini_dispatch_allowed "$(octo_resolve_gemini_auth)"; then
+        has_gemini="true"
+    fi
 
     # Derive settings based on resource tier
     local opus_budget="balanced"
@@ -1512,7 +1519,38 @@ is_agent_available() {
             [[ "$USER_HAS_OPENAI" == "true" || -n "${OPENAI_API_KEY:-}" ]]
             ;;
         gemini|gemini-fast|gemini-image)
-            [[ "$USER_HAS_GEMINI" == "true" || -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]]
+            # lestephen.50 (closes GH #28): use centralized resolver +
+            # dispatch allowlist. USER_HAS_GEMINI may be cached "true"
+            # from a prior config save that didn't know about stale-blob,
+            # so the resolver gets the final word.
+            if declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+                octo_gemini_dispatch_allowed "$(octo_resolve_gemini_auth)"
+            else
+                # preflight.sh not loaded yet — inline shape-validating
+                # fallback. gemini v13 SEV-2: a naive `[[ -n env-var ]]`
+                # check would let a stale-blob env-var dispatch and crash
+                # with 400 INVALID_ARGUMENT. Two-stage check mirrors the
+                # resolver's logic.
+                local _v _ok=1
+                for _v in "${GEMINI_API_KEY:-}" "${GOOGLE_API_KEY:-}"; do
+                    [[ -n "$_v" ]] || continue
+                    case "$_v" in
+                        \{*)
+                            case "$_v" in
+                                *accessToken*|*expiresAt*|*tokenType*|*serverName*)
+                                    _ok=1 ;;
+                                *)
+                                    [[ "$_ok" -eq 1 ]] && _ok=0 ;;
+                            esac
+                            ;;
+                        *' '*|*$'\t'*|*$'\n'*)
+                            _ok=1 ;;
+                        *)
+                            [[ "$_ok" -eq 1 ]] && _ok=0 ;;
+                    esac
+                done
+                [[ "$_ok" -eq 0 ]]
+            fi
             ;;
         *)
             return 0  # Unknown agents assumed available
@@ -3096,7 +3134,13 @@ EOF
 
         # Detect providers
         _codex_ok="false"; command -v codex &>/dev/null && [[ -n "${OPENAI_API_KEY:-}" || -f "${HOME}/.codex/auth.json" ]] && _codex_ok="true"
-        _gemini_ok="false"; command -v gemini &>/dev/null && [[ -n "${GEMINI_API_KEY:-}" || -f "${HOME}/.gemini/oauth_creds.json" ]] && _gemini_ok="true"
+        # lestephen.50 (closes GH #28): centralized resolver + allowlist.
+        _gemini_ok="false"
+        if command -v gemini &>/dev/null \
+           && declare -f octo_resolve_gemini_auth >/dev/null 2>&1 \
+           && octo_gemini_dispatch_allowed "$(octo_resolve_gemini_auth)"; then
+            _gemini_ok="true"
+        fi
         _claude_ok="true"  # Always available
         _perplexity_ok="false"; [[ -n "${PERPLEXITY_API_KEY:-}" ]] && _perplexity_ok="true"
 

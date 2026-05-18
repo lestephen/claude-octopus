@@ -36,16 +36,56 @@ else
   printf "codex_auth:none\n"
 fi
 printf "gemini:%s\n" "$(command -v gemini >/dev/null 2>&1 && echo installed || echo missing)"
-# gemini_auth: was previously missing entirely from the initial scan
-# (lestephen.41 closes GH #24). Mirror detect-providers' OAuth + env
-# var checks so the wizard's first-pass status is honest.
-if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-  printf "gemini_auth:oauth\n"
-elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-  printf "gemini_auth:api-key\n"
-else
-  printf "gemini_auth:none\n"
+# gemini_auth: prefer the canonical resolver (octo_resolve_gemini_auth in
+# scripts/lib/preflight.sh — single source of truth per lestephen.50,
+# closes GH #28). If the plugin isn't reachable (fresh install, no symlink
+# yet), fall back to an inline check that mirrors the helper's logic.
+_octo_plugin_dir="${OCTOPUS_PLUGIN_DIR:-${HOME}/.claude-octopus/plugin}"
+if [[ -r "${_octo_plugin_dir}/scripts/lib/preflight.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${_octo_plugin_dir}/scripts/lib/preflight.sh" 2>/dev/null
 fi
+if declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+  printf "gemini_auth:%s\n" "$(octo_resolve_gemini_auth)"
+else
+  # Inline fallback. Order MATTERS: env-var → stale-blob → oauth_creds →
+  # keychain → none. Two-stage stale-blob check (must start with `{`
+  # AND contain OAuth field names) to avoid false-positive on legit
+  # `{`-prefixed enterprise tokens.
+  # codex/gemini v12 SEV-2: evaluate the two env vars SEPARATELY — a
+  # concat across both could synthesize a false stale-blob match (e.g.
+  # GEMINI=`{enterprise}` + GOOGLE=`x-accessToken-y` would glue to
+  # `{enterprise}x-accessToken-y` and falsely match).
+  _octo_env_stale_blob=0
+  for _v in "${GEMINI_API_KEY:-}" "${GOOGLE_API_KEY:-}"; do
+    [[ -n "$_v" ]] || continue
+    case "$_v" in
+      \{*)
+        case "$_v" in
+          *accessToken*|*expiresAt*|*tokenType*|*serverName*)
+            _octo_env_stale_blob=1; break ;;
+        esac
+        ;;
+      *' '*|*$'\t'*|*$'\n'*) _octo_env_stale_blob=1; break ;;
+    esac
+  done
+  if [[ "$_octo_env_stale_blob" -eq 1 ]]; then
+    printf "gemini_auth:stale-blob\n"
+  elif [[ -n "${GEMINI_API_KEY:-}" || -n "${GOOGLE_API_KEY:-}" ]]; then
+    printf "gemini_auth:api-key\n"
+  elif [[ -f "$HOME/.gemini/.env" ]] && grep -m1 -E '^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*(["'\'']?)\{' "$HOME/.gemini/.env" 2>/dev/null | grep -qE 'accessToken|tokenType|serverName'; then
+    printf "gemini_auth:stale-blob\n"
+  elif [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+    printf "gemini_auth:oauth\n"
+  elif [[ "$(uname -s)" == "Darwin" ]] && command -v security >/dev/null 2>&1 && command -v gemini >/dev/null 2>&1 && { command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; }; then
+    _tb="timeout"; command -v timeout >/dev/null 2>&1 || _tb="gtimeout"
+    "$_tb" 2 security find-generic-password -s gemini-cli-api-key -a default-api-key >/dev/null 2>&1 && \
+      printf "gemini_auth:keychain\n" || printf "gemini_auth:none\n"
+  else
+    printf "gemini_auth:none\n"
+  fi
+fi
+unset _octo_plugin_dir _tb _v _octo_env_stale_blob
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo configured || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo installed || echo missing)"
 printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo installed || echo missing)"
@@ -487,6 +527,52 @@ Quick start:
   Just describe what you need — "research X", "build Y", "review Z"
   Or use /octo:auto for the smart router
   Run /octo:doctor anytime for diagnostics
+```
+
+## Platform-specific gotchas (surface when relevant)
+
+### When `codex` is detected
+
+Append to the summary so users who reach for `codex exec` directly (outside `/octo:*` workflows) don't hit the silent-hang pitfall:
+
+```
+ℹ Direct codex invocation: `codex exec` blocks on stdin when the prompt
+  is passed as a positional argument. Use one of:
+    cat prompt.md | codex exec --model <model> [-i <image>]
+    codex exec --model <model> [-i <image>] -    # then pipe via stdin
+  Octopus workflows already handle this correctly (orchestrate.sh uses
+  the trailing `-` pattern). Direct invocation is what bites.
+```
+
+### When `gemini` is detected — surface upstream auth caveats
+
+The most reliable persistence path across macOS, Linux, and Windows is **shell rc with `export GEMINI_API_KEY=...`**. Reasons:
+
+- Per upstream issue [google-gemini/gemini-cli#18927](https://github.com/google-gemini/gemini-cli/issues/18927), Keychain access fails for Homebrew-installed gemini-cli on macOS and some Linux environments (RHEL, Rocky, Ubuntu). When Keychain fails, `gemini auth login` falls back to FileKeychain — and in observed cases, serializes the OAuthCredentials wrapper into `~/.gemini/.env` as a literal JSON string, breaking headless dispatch.
+- `~/.gemini/.env` precedence is first-file-wins per upstream docs — any ancestor `.env` in your project tree shadows the home-dir one.
+- Shell rc files have none of these problems: explicit, persistent, no precedence games, no Keychain dependency.
+
+If `GEMINI_AUTH=stale-blob` is reported, the detector emits a stderr warning with a copy-paste fix. The wizard should ALSO surface a one-line summary in the dashboard:
+
+```
+🟡 Gemini CLI:    [Installed ✓] [Auth: stale-blob ⚠ — see warning above]
+```
+
+For `GEMINI_AUTH=keychain` (macOS Keychain entry detected, no env var, no stale .env), report it as available but recommend the user verify with a quick `gemini -p "test"` because upstream bug #18927 may have broken the Keychain path even though the entry exists:
+
+```
+🟡 Gemini CLI:    [Installed ✓] [Auth: keychain — verify with: gemini -p "test"]
+  ℹ Most reliable persistence is shell rc:
+    echo 'export GEMINI_API_KEY="AIza..."' >> ~/.zshrc && source ~/.zshrc
+```
+
+For `GEMINI_AUTH=none`:
+
+```
+🟡 Gemini CLI:    [Installed ✓] [Auth: ✗ — set GEMINI_API_KEY]
+  Get a key at https://aistudio.google.com/app/apikey, then:
+    echo 'export GEMINI_API_KEY="AIza..."' >> ~/.zshrc
+    source ~/.zshrc
 ```
 
 ## IMPORTANT: This Replaces Passive Setup

@@ -690,9 +690,22 @@ check_provider_health() {
                 echo "gemini CLI not found in PATH" >&2
                 return 1
             fi
-            # v9.2.1: Check OAuth creds first (Issue #177)
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-                return 0
+            # lestephen.50 (closes GH #28): use centralized resolver + the
+            # dispatch-allowlist helper. CRITICAL — must NOT return 0 for
+            # stale-blob (would crash mid-dispatch with 400). The check
+            # below replaces the prior "OAuth wins immediately" pattern,
+            # which silently treated stale-blob+oauth_creds combos as
+            # working but they fail at runtime per upstream #18927.
+            if declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+                local _g_auth
+                _g_auth=$(octo_resolve_gemini_auth)
+                if octo_gemini_dispatch_allowed "$_g_auth"; then
+                    return 0
+                fi
+                if [[ "$_g_auth" == "stale-blob" ]]; then
+                    echo "gemini: ~/.gemini/.env has stale OAuth blob (upstream #18927); set GEMINI_API_KEY in shell rc" >&2
+                    return 1
+                fi
             fi
             # Try resolving env vars from profile/.env for non-interactive shells
             if [[ -z "${GEMINI_API_KEY:-}" ]]; then
@@ -926,12 +939,22 @@ detect_providers() {
     fi
 
     # Detect Gemini CLI
+    # lestephen.50 (closes GH #28): use the centralized resolver.
+    # providers.sh is sourced before preflight.sh in orchestrate.sh
+    # (line 111 vs 118), and may be sourced standalone by smoke.sh, so
+    # source preflight.sh from here on-demand if the resolver isn't
+    # defined yet. The source is idempotent (preflight.sh defines
+    # functions only; no side effects at source time).
     if command -v gemini &>/dev/null; then
         local gemini_auth="none"
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-            gemini_auth="oauth"
-        elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
-            gemini_auth="api-key"
+        if ! declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+            local _providers_lib_dir
+            _providers_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            # shellcheck disable=SC1091
+            source "${_providers_lib_dir}/preflight.sh" 2>/dev/null || true
+        fi
+        if declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+            gemini_auth=$(octo_resolve_gemini_auth)
         fi
         result="${result}gemini:${gemini_auth} "
     fi

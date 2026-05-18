@@ -8,6 +8,235 @@ if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
     source "${_preflight_lib_dir}/cursor-agent.sh" 2>/dev/null || true
 fi
 
+# lestephen.50 (closes GH #28): Gemini auth diagnostic helpers.
+#
+# Context: gemini-cli stores the API key via HybridTokenStorage which uses
+# macOS Keychain when available, encrypted FileKeychain fallback otherwise.
+# Headless mode (-p) reads via `loadApiKey()`:
+#   key = process.env.GEMINI_API_KEY || (await loadApiKey())
+#
+# So in principle, headless mode CAN use Keychain-stored keys. In practice,
+# two failure modes shipped on Mac dogfood:
+#
+# 1. Per upstream issue google-gemini/gemini-cli#18927, Homebrew-installed
+#    gemini-cli on macOS (and some Linux installs) fail to access Keychain.
+#    saveApiKey() falls through to FileKeychain (or — in observed cases —
+#    appears to write the OAuthCredentials wrapper to ~/.gemini/.env
+#    serialized as a JSON STRING under GEMINI_API_KEY=).
+#
+# 2. When ~/.gemini/.env has GEMINI_API_KEY=<JSON-wrapper>, gemini-cli's
+#    .env loader reads the JSON string as the literal env var. The env var
+#    wins precedence over loadApiKey(), so the JSON string is sent to
+#    Google's API as the API key, returning 400 INVALID_ARGUMENT.
+#
+# Our job is NOT to fix gemini-cli's broken Keychain integration. Our job
+# is to report accurately and tell the user the reliable workaround:
+# `export GEMINI_API_KEY=AIza...` in shell rc.
+
+# octo_resolve_gemini_auth: canonical single-source-of-truth resolver.
+#
+# Returns ONE token on stdout:
+#   api-key    GEMINI_API_KEY or GOOGLE_API_KEY set in env
+#   stale-blob ~/.gemini/.env has a corrupted JSON OAuthCredentials wrapper
+#              under GEMINI_API_KEY (upstream gemini-cli#18927 fallout)
+#   oauth      ~/.gemini/oauth_creds.json exists
+#   keychain   macOS Keychain entry detected (gemini-cli-api-key /
+#              default-api-key). Bounded by timeout binary availability.
+#   none       no recognized auth state
+#
+# Precedence order matters and is enforced here for ALL callers:
+#   env-var first (most reliable, user-set)
+#   stale-blob BEFORE oauth_creds (gemini-cli's .env loader shadows oauth)
+#   oauth_creds before keychain (cheaper check, faster)
+#   keychain last (requires subprocess + timeout)
+#
+# Side effects: NONE — pure stdout-returning function. No exports, no
+# warnings, no env var writes. Callers that want to surface remediation
+# (e.g., the stale-blob warning) call `octo_warn_gemini_stale_blob`
+# separately.
+#
+# lestephen.50 (closes GH #28): centralizes the auth resolution that was
+# duplicated across 7+ sites (cmd_detect_providers, preflight_check,
+# detect_providers, check_provider_health, is_agent_available,
+# is_agent_available_v2, save_user_config, has_gemini, init-workflow,
+# setup.md initial scan). Each iteration of GH #28's earlier rounds
+# surfaced ANOTHER stale site because the logic was scattered. Single
+# function eliminates the entire class of "missed a site" bugs.
+octo_resolve_gemini_auth() {
+    # 1. env-var — but SHAPE-VALIDATE first. codex v10 SEV-1: a user who
+    # copy-pasted the OAuthCredentials wrapper into their shell rc as a
+    # "fix" would be classified as api-key here, and dispatch would crash
+    # with 400 INVALID_ARGUMENT.
+    #
+    # gemini v11 SEV-1: the rejection must be TWO-STAGE to avoid
+    # false-positive on legitimate `{`-prefixed enterprise tokens:
+    #   (a) starts with `{` AND
+    #   (b) contains one of the OAuthCredentials field names
+    # Matches the .env parser's check below.
+    # Whitespace inside an env value is also a stale-blob signal (real
+    # Gemini API keys are alphanumeric+dash, no spaces).
+    local _v
+    for _v in "${GEMINI_API_KEY:-}" "${GOOGLE_API_KEY:-}"; do
+        [[ -n "$_v" ]] || continue
+        case "$_v" in
+            \{*)
+                # Starts with `{` — check for OAuth field names.
+                case "$_v" in
+                    *accessToken*|*expiresAt*|*tokenType*|*serverName*)
+                        echo "stale-blob"
+                        return 0
+                        ;;
+                esac
+                # `{`-prefixed but doesn't look like our specific
+                # OAuthCredentials shape — treat as a legitimate
+                # enterprise / custom token. Fall through.
+                ;;
+            *' '*|*$'\t'*|*$'\n'*)
+                # Whitespace inside the value — definitely not a real
+                # API key. Could be a multi-line OAuth wrapper or just
+                # paste-error.
+                echo "stale-blob"
+                return 0
+                ;;
+        esac
+    done
+    if [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        echo "api-key"
+        return 0
+    fi
+    # 2. stale-blob in ~/.gemini/.env (before oauth_creds — gemini-cli
+    # .env loader shadows oauth_creds when GEMINI_API_KEY is set in .env,
+    # even to garbage). Match unquoted, double-quoted, or single-quoted
+    # JSON wrapper that contains OAuthCredentials field names (avoids
+    # false-positive on legitimate `{`-prefixed enterprise tokens).
+    # codex v10 SEV-1: use `grep -m1` to avoid SIGPIPE-under-pipefail
+    # when there are duplicate matching lines.
+    if [[ -f "$HOME/.gemini/.env" ]] && \
+       grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*([\"']?)\{" "$HOME/.gemini/.env" 2>/dev/null \
+       | grep -qE 'accessToken|tokenType|serverName'; then
+        echo "stale-blob"
+        return 0
+    fi
+    # 3. oauth_creds
+    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+        echo "oauth"
+        return 0
+    fi
+    # 4. macOS Keychain (bounded). Requires `timeout` or `gtimeout` —
+    # absent on default macOS, available via `brew install coreutils`.
+    # Without timeout we'd risk a blocking UI prompt on a locked Keychain.
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] && \
+       command -v security >/dev/null 2>&1; then
+        local _tb=""
+        if command -v timeout >/dev/null 2>&1; then _tb="timeout"
+        elif command -v gtimeout >/dev/null 2>&1; then _tb="gtimeout"
+        fi
+        if [[ -n "$_tb" ]] && \
+           "$_tb" 2 security find-generic-password \
+               -s gemini-cli-api-key -a default-api-key >/dev/null 2>&1; then
+            echo "keychain"
+            return 0
+        fi
+    fi
+    # 5. none
+    echo "none"
+}
+
+# octo_gemini_dispatch_allowed STATE — returns 0 (yes, dispatch) or
+# 1 (no, abort). Single allowlist of working states; every callsite
+# that decides "should we route to gemini" calls this.
+#
+# Why an allowlist instead of "!= none": stale-blob is NOT none, but
+# dispatching with it crashes mid-run. The allowlist prevents the
+# "treat everything non-none as available" trap.
+octo_gemini_dispatch_allowed() {
+    case "${1:-}" in
+        api-key|oauth|keychain) return 0 ;;
+        stale-blob|none|"")     return 1 ;;
+        *)                      return 1 ;;
+    esac
+}
+
+# octo_warn_gemini_stale_blob — TTY-gated, per-process-sentinel-guarded
+# remediation message. Called from interactive contexts AFTER
+# octo_resolve_gemini_auth returns "stale-blob". Caller decides when to
+# surface (cmd_detect_providers does so automatically; smoke.sh / library
+# callers can skip).
+octo_warn_gemini_stale_blob() {
+    [[ -t 2 ]] || return 0
+    [[ -z "${OCTO_GEMINI_STALE_BLOB_WARNED:-}" ]] || return 0
+    export OCTO_GEMINI_STALE_BLOB_WARNED=1
+    cat >&2 <<'STALE_BLOB_WARNING'
+⚠ ~/.gemini/.env contains GEMINI_API_KEY set to a JSON OAuthCredentials
+  wrapper (from upstream gemini-cli bug google-gemini/gemini-cli#18927 —
+  Keychain access fails on Homebrew installs / some Linux environments,
+  the fallback serializes credentials into .env as a JSON string).
+
+  gemini-cli will read the JSON string as the literal API key and Google
+  will return 400 INVALID_ARGUMENT. Octopus will not dispatch gemini in
+  this state.
+
+  Fix (most reliable, works everywhere):
+    1. Delete the corrupted line:
+         grep -v '^[[:space:]]*\(export[[:space:]]\+\)\?GEMINI_API_KEY=' ~/.gemini/.env > ~/.gemini/.env.tmp
+         mv ~/.gemini/.env.tmp ~/.gemini/.env
+    2. Get a raw API key from https://aistudio.google.com/app/apikey
+    3. Add to your shell rc (~/.zshrc or ~/.bashrc):
+         export GEMINI_API_KEY="AIza..."
+    4. Reload: `source ~/.zshrc` (or open a new terminal)
+STALE_BLOB_WARNING
+}
+
+# octo_check_gemini_env_corruption: stdout = "clean" if ~/.gemini/.env is
+# absent or doesn't look broken; "stale-blob" if it has a JSON-wrapper-shaped
+# GEMINI_API_KEY value (per upstream #18927 corruption). Side-effect-free
+# (no exports, no warnings). Cheap and headless-safe.
+octo_check_gemini_env_corruption() {
+    local env_file="$HOME/.gemini/.env"
+    if [[ ! -f "$env_file" ]]; then
+        echo "clean"
+        return 0
+    fi
+    # gemini v8 SEV-1: regex must match quoted JSON wrappers too.
+    # providers.sh and setup.md were updated for quoted form; this helper
+    # was missed, causing a desync where orchestrate.sh::has_gemini (which
+    # uses this helper) would miss quoted blobs.
+    # Match optional single or double quote BEFORE the opening {.
+    # codex v10 SEV-1: `grep -m1` instead of `grep | head -1 | grep` so
+    # SIGPIPE under pipefail (duplicate matching lines) doesn't make the
+    # condition false.
+    if grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*([\"']?)\{" "$env_file" 2>/dev/null \
+       | grep -qE 'accessToken|tokenType|serverName'; then
+        echo "stale-blob"
+        return 0
+    fi
+    echo "clean"
+}
+
+# octo_check_gemini_keychain_macos: stdout = "present"/"absent"/"unavailable".
+# Bounded by timeout (interactive context only — see warning at the call
+# site about not invoking from headless auto-detect paths).
+octo_check_gemini_keychain_macos() {
+    [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || { echo "unavailable"; return 0; }
+    command -v security >/dev/null 2>&1 || { echo "unavailable"; return 0; }
+    local _timeout_bin=""
+    if command -v timeout >/dev/null 2>&1; then _timeout_bin="timeout"
+    elif command -v gtimeout >/dev/null 2>&1; then _timeout_bin="gtimeout"
+    else echo "unavailable"; return 0
+    fi
+    # codex v6 SEV-2: use both service name AND account to avoid false
+    # positives from stale/test/other entries. Per gemini-cli source
+    # (apiKeyCredentialStorage.ts) the key is stored under:
+    #   service: "gemini-cli-api-key"  (KEYCHAIN_SERVICE_NAME)
+    #   account: "default-api-key"     (DEFAULT_API_KEY_ENTRY)
+    if "$_timeout_bin" 2 security find-generic-password \
+            -s gemini-cli-api-key -a default-api-key >/dev/null 2>&1; then
+        echo "present"
+    else
+        echo "absent"
+    fi
+}
+
 # Command: detect-providers
 # Output parseable provider status for Claude Code skill
 cmd_detect_providers() {
@@ -71,20 +300,17 @@ cmd_detect_providers() {
     echo ""
 
     # Check Gemini CLI
+    # lestephen.50 (closes GH #28): all gemini auth resolution centralized
+    # in octo_resolve_gemini_auth (see top of this file). Single function,
+    # single precedence order. cmd_detect_providers is the canonical
+    # interactive entry point so it also fires the user-facing remediation
+    # via octo_warn_gemini_stale_blob.
     if command -v gemini &>/dev/null; then
         echo "GEMINI_STATUS=ok"
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-            echo "GEMINI_AUTH=oauth"
-        elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-            # GOOGLE_API_KEY is gemini-cli's second supported env var per
-            # https://github.com/google-gemini/gemini-cli. lestephen.41
-            # (closes GH #24): live-echo only checked GEMINI_API_KEY but
-            # the cache-write branch below (and check_first_run) accept
-            # GOOGLE_API_KEY — divergence was a false-negative source.
-            echo "GEMINI_AUTH=api-key"
-        else
-            echo "GEMINI_AUTH=none"
-        fi
+        local _gemini_auth
+        _gemini_auth=$(octo_resolve_gemini_auth)
+        echo "GEMINI_AUTH=${_gemini_auth}"
+        [[ "$_gemini_auth" == "stale-blob" ]] && octo_warn_gemini_stale_blob
     else
         echo "GEMINI_STATUS=missing"
         echo "GEMINI_AUTH=none"
@@ -210,14 +436,9 @@ cmd_detect_providers() {
         codex_auth="none"
     fi
     local gemini_status=$(command -v gemini &>/dev/null && echo "ok" || echo "missing")
+    # lestephen.50 (closes GH #28): centralized resolver.
     local gemini_auth
-    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
-        gemini_auth="oauth"
-    elif [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-        gemini_auth="api-key"
-    else
-        gemini_auth="none"
-    fi
+    gemini_auth=$(octo_resolve_gemini_auth)
     local perplexity_status=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "ok" || echo "not-configured")
     local perplexity_auth=$([[ -n "${PERPLEXITY_API_KEY:-}" ]] && echo "api-key" || echo "none")
     local ollama_status=$(command -v ollama &>/dev/null && { curl -sf http://localhost:11434/api/tags &>/dev/null && echo "running" || echo "stopped"; } || echo "not-installed")
@@ -423,7 +644,10 @@ preflight_check() {
     if command -v gemini &>/dev/null; then
         has_gemini=true
         log DEBUG "Gemini CLI: $(command -v gemini)"
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        # lestephen.50 (closes GH #28): use the canonical resolver so this
+        # path doesn't go stale relative to cmd_detect_providers /
+        # providers.sh / model-resolver / config-display.
+        if octo_gemini_dispatch_allowed "$(octo_resolve_gemini_auth)"; then
             gemini_auth=true
         fi
     fi

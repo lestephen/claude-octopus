@@ -333,7 +333,22 @@ is_agent_available_v2() {
             [[ "$PROVIDER_CODEX_INSTALLED" == "true" && "$PROVIDER_CODEX_AUTH_METHOD" != "none" ]]
             ;;
         gemini|gemini-fast|gemini-image)
-            [[ "$PROVIDER_GEMINI_INSTALLED" == "true" && "$PROVIDER_GEMINI_AUTH_METHOD" != "none" ]]
+            # lestephen.50 (closes GH #28): use centralized dispatch
+            # allowlist. PROVIDER_GEMINI_AUTH_METHOD is populated by
+            # detect_providers/save_user_config which now all use the
+            # centralized resolver, so values are one of: api-key, oauth,
+            # keychain, stale-blob, none.
+            if [[ "$PROVIDER_GEMINI_INSTALLED" != "true" ]]; then
+                false
+            elif declare -f octo_gemini_dispatch_allowed >/dev/null 2>&1; then
+                octo_gemini_dispatch_allowed "$PROVIDER_GEMINI_AUTH_METHOD"
+            else
+                # Inline fallback — explicit allowlist same as the helper.
+                case "$PROVIDER_GEMINI_AUTH_METHOD" in
+                    api-key|oauth|keychain) true ;;
+                    *) false ;;
+                esac
+            fi
             ;;
         openrouter|openrouter-*)
             [[ "$PROVIDER_OPENROUTER_ENABLED" == "true" && "$PROVIDER_OPENROUTER_API_KEY_SET" == "true" ]]

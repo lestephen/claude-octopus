@@ -418,19 +418,40 @@ setup_wizard() {
         export GEMINI_API_KEY="$GOOGLE_API_KEY"
     fi
 
-    # Check OAuth first (preferred)
-    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+    # lestephen.50 (closes GH #28): centralized resolver — switch from
+    # duplicated inline checks to the canonical octo_resolve_gemini_auth.
+    local _gemini_state="none"
+    if declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+        _gemini_state=$(octo_resolve_gemini_auth)
+    elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
+        _gemini_state="api-key"
+    elif [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+        _gemini_state="oauth"
+    fi
+    case "$_gemini_state" in
+    api-key)
+        echo -e "  ${GREEN}✓${NC} Gemini: API key set (${#GEMINI_API_KEY} chars)"
+        ;;
+    stale-blob)
+        echo -e "  ${YELLOW}⚠${NC} Gemini: stale-blob detected in ~/.gemini/.env"
+        echo -e "      Upstream gemini-cli bug #18927 wrote a JSON OAuthCredentials wrapper there."
+        echo -e "      Fix: delete the corrupted line, then ${GREEN}export GEMINI_API_KEY=\"AIza...\"${NC} in your shell rc."
+        ;;
+    oauth)
         echo -e "  ${GREEN}✓${NC} Gemini: OAuth authenticated"
         local auth_type
         auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")
         echo -e "      Type: $auth_type"
-        # macOS keychain prompt warning for OAuth users
         if [[ "$OCTOPUS_PLATFORM" == "Darwin" ]]; then
             echo -e "  ${GREEN}✓${NC} macOS keychain bypass active (file-based token storage)"
         fi
-    elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
-        echo -e "  ${GREEN}✓${NC} Gemini: API key set (${#GEMINI_API_KEY} chars)"
-    else
+        ;;
+    keychain)
+        echo -e "  ${GREEN}✓${NC} Gemini: macOS Keychain entry detected (gemini-cli's loadApiKey will use it)"
+        echo -e "      ${YELLOW}Note:${NC} Upstream bug #18927 may break Keychain access on some installs."
+        echo -e "      Verify with: ${GREEN}gemini -p \"test\"${NC} — if it fails, set ${GREEN}export GEMINI_API_KEY=...${NC} in shell rc."
+        ;;
+    *)
         echo -e "  ${YELLOW}✗${NC} Gemini: Not authenticated"
         if [[ "$NON_INTERACTIVE" == "true" ]]; then
             echo ""
@@ -463,7 +484,8 @@ setup_wizard() {
                 echo -e "  ${YELLOW}⚠${NC} Skipped. Authenticate later via 'gemini' OR set GEMINI_API_KEY"
             fi
         fi
-    fi
+        ;;
+    esac
     echo ""
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -510,9 +532,20 @@ setup_wizard() {
     # STEP 6: Gemini Subscription Tier (v4.8)
     # ═══════════════════════════════════════════════════════════════════════════
     ((++current_step))
-    if command -v gemini &>/dev/null && [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}" ]]; then
+    # lestephen.50 (closes GH #28): centralized gemini auth resolution
+    # via octo_resolve_gemini_auth (in scripts/lib/preflight.sh).
+    # The wizard's saved state must REJECT stale-blob — saving "working"
+    # for a corrupted .env would make model-resolver dispatch and crash.
+    local _gemini_auth_method="none"
+    if command -v gemini &>/dev/null && declare -f octo_resolve_gemini_auth >/dev/null 2>&1; then
+        _gemini_auth_method=$(octo_resolve_gemini_auth)
+    fi
+    # codex v12 SEV-2: guard the helper call so config-display.sh sourced
+    # standalone (without preflight.sh) doesn't emit a command-not-found.
+    if declare -f octo_gemini_dispatch_allowed >/dev/null 2>&1 \
+       && octo_gemini_dispatch_allowed "$_gemini_auth_method"; then
         PROVIDER_GEMINI_INSTALLED="true"
-        [[ -f "$HOME/.gemini/oauth_creds.json" ]] && PROVIDER_GEMINI_AUTH_METHOD="oauth" || PROVIDER_GEMINI_AUTH_METHOD="api-key"
+        PROVIDER_GEMINI_AUTH_METHOD="$_gemini_auth_method"
 
         echo -e "${CYAN}Step $current_step/$total_steps: Gemini Subscription Tier${NC}"
 
