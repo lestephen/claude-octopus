@@ -35,76 +35,39 @@ Note the names — they're different on purpose:
 
 The marketplace pin updates automatically on every fork release via CI (see `.github/workflows/update-marketplace.yml`), so `octo@lestephen-octo` always tracks the latest `v9.38.0-lestephen.N` tag.
 
-### Development install (replace the cached install with a symlink to your working tree)
+### Development install
 
-There's no one-shot "dev install" command — Claude Code's plugin system fetches from the marketplace into a versioned cache directory, and `~/.claude-octopus/plugin` is the plugin's *own* internal self-resolution path (used by `bin/octo-consensus`, `setup.md`, etc.), NOT a path Claude Code discovers automatically.
+Two commands. The first registers the plugin with Claude Code; the second replaces the cached install with a symlink to a working tree you can edit.
 
-The honest dev workflow:
+Inside Claude Code:
 
-```bash
-# 1. Install via the marketplace at least once so Claude Code registers
-#    the plugin and creates the cache directory it dispatches from.
-#    Inside Claude Code:
-#        /plugin marketplace add lestephen/claude-octopus-marketplace
-#        /plugin install octo@lestephen-octo
-
-# 2. Clone the source outside the cache so your edits don't get blown
-#    away by /plugin update.
-mkdir -p ~/source
-git clone https://github.com/lestephen/claude-octopus ~/source/claude-octopus
-
-set -euo pipefail   # fail loudly if anything goes wrong
-
-# 3. Resolve Claude Code's active install path from its install record.
-#    The schema looks like:
-#      {"plugins": {"octo@lestephen-octo": [
-#         {"scope":"user","installPath":"/home/<u>/.claude/plugins/cache/lestephen-octo/octo/9.38.0",
-#          "version":"9.38.0","lastUpdated":"…"}, ...]}}
-#    Multiple entries can exist (after upgrades, or project + user scope);
-#    pick the most recently updated to match what Claude Code dispatches to.
-CACHED=$(jq -r '
-    .plugins["octo@lestephen-octo"]
-    | sort_by(.lastUpdated)
-    | last
-    | .installPath
-  ' "$HOME/.claude/plugins/installed_plugins.json")
-if [[ -z "$CACHED" || "$CACHED" == "null" ]]; then
-    echo "ERROR: octo@lestephen-octo not in installed_plugins.json — did step 1 succeed?" >&2
-    exit 1
-fi
-echo "Cached install: $CACHED"  # e.g. /home/<u>/.claude/plugins/cache/lestephen-octo/octo/9.38.0
-
-# 4. Replace the cached install with a symlink to your working tree.
-#    Now any edit in $HOME/source/claude-octopus is live for /octo:* commands.
-#    Explicit rm exit-check; set -e at top also catches it.
-rm -rf "$CACHED" || { echo "ERROR: failed to remove $CACHED (busy?)" >&2; exit 1; }
-ln -s "$HOME/source/claude-octopus" "$CACHED"
-
-# 5. ALSO symlink the plugin's self-resolution path. Some plugin scripts
-#    (bin/octo-consensus, image-attach.sh source path, setup.md install
-#    hints) expect this exact location independent of Claude Code's cache.
-mkdir -p "$HOME/.claude-octopus"
-TARGET="$HOME/.claude-octopus/plugin"
-if [[ -L "$TARGET" ]]; then
-    rm -f "$TARGET"                          # existing symlink — safe to replace
-elif [[ -d "$TARGET" ]]; then
-    if [[ -z "$(ls -A "$TARGET")" ]]; then
-        rmdir "$TARGET"                      # empty dir — safe to replace
-    else
-        echo "ERROR: $TARGET exists as a non-empty directory. Inspect and remove manually before continuing:" >&2
-        ls -la "$TARGET" >&2
-        exit 1
-    fi
-fi
-ln -s "$HOME/source/claude-octopus" "$TARGET"
+```
+/plugin marketplace add lestephen/claude-octopus-marketplace
+/plugin install octo@lestephen-octo
 ```
 
-**Gotchas:**
-- **`/plugin update` will clobber the symlink.** Running it deletes the cache dir and re-pulls from the marketplace tag — you'll be back to a real copy of the pinned version. Re-do step 4 after any `/plugin update` if you want to keep editing live. Step 3's `installPath` lookup will then point at the new version subdir if Claude Code updated the version.
-- **The version subdir is the BASE version (`9.38.0`), not the fork suffix (`-lestephen.35`).** Resolve via the `installed_plugins.json` lookup in step 3 — don't hardcode.
-- **Both symlinks needed.** Claude Code finds the plugin via the path in `installed_plugins.json`; the plugin's own scripts find themselves via `~/.claude-octopus/plugin`. The two-symlink dance covers both.
+Then in a shell:
 
-After either install path, run `/octo:setup` (inherited from upstream) for the guided provider/auth wizard.
+```bash
+bash "$(ls -t ~/.claude/plugins/cache/lestephen-octo/octo/*/scripts/dev-install.sh | head -1)"
+# Or with a custom source directory (default: ~/source/claude-octopus):
+# bash "$(ls -t ~/.claude/plugins/cache/lestephen-octo/octo/*/scripts/dev-install.sh | head -1)" /path/to/clone
+```
+
+(`ls -t … | head -1` picks the most-recently-modified version of the script — multi-version caches won't pass extra paths as args, which would otherwise confuse `$1`.)
+
+That's it. `scripts/dev-install.sh` is idempotent and handles the rest:
+
+1. Reads Claude Code's active install path from `~/.claude/plugins/installed_plugins.json` (deterministic across multi-version caches via `jq sort_by(.lastUpdated) | last`).
+2. Clones the fork into your source directory if not already present.
+3. Replaces the cached install with a symlink to your working tree — edits go live immediately for `/octo:*` commands.
+4. Symlinks the plugin's self-resolution path (`~/.claude-octopus/plugin`) at the cached install path — so the plugin's own scripts (`bin/octo-consensus`, `setup.md` install hints, ~200 skill-prose refs) find themselves transitively through to your working tree.
+
+**Gotchas:**
+- **`/plugin update` will clobber the cache symlink.** Re-run `dev-install.sh` after any `/plugin update` to restore it.
+- **The version subdir** in the cache path is the BASE version from `plugin.json` (e.g. `9.38.0`), not the `-lestephen.N` fork suffix. The script resolves it; the `*` glob in the bash command above expands to whatever's there.
+
+After either install path (marketplace or dev), run `/octo:setup` (inherited from upstream) for the guided provider/auth wizard.
 
 ---
 
