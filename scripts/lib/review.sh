@@ -202,15 +202,50 @@ build_review_fleet() {
 }
 
 # review_collect_diff: resolves a review target to unified diff content.
-# Targets can be built-in scopes (staged, working-tree), a PR number, a git
-# pathspec, or an already-generated .diff/.patch file.
+# Targets can be built-in scopes (staged, working-tree, branch), a PR number,
+# a git pathspec, or an already-generated .diff/.patch file.
+#
+# lestephen.35 (closes petrics dogfood SEV-1 on GH #11 reopen): `branch` was
+# silently falling through to the pathspec arm, producing an empty diff and
+# a "No issues found" false-negative review. Now properly resolved to
+# `git diff <merge-base>..HEAD` against the supplied base ref.
 review_collect_diff() {
     local target="$1"
+    local base="${2:-}"  # optional base ref for branch-scope; defaults to origin/HEAD
     local diff_content=""
 
     case "$target" in
         staged)       diff_content=$(git diff --cached 2>/dev/null || true) ;;
         working-tree) diff_content=$(git diff 2>/dev/null || true) ;;
+        branch)
+            # Resolve effective base: explicit > origin/HEAD's branch >
+            # origin/main > main > fail loudly. Refuse silent default to "" —
+            # that's what made the original bug a silent false-negative.
+            local _eff_base="$base"
+            if [[ -z "$_eff_base" ]]; then
+                _eff_base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+            fi
+            if [[ -z "$_eff_base" ]] && git rev-parse --verify --quiet origin/main >/dev/null; then
+                _eff_base="origin/main"
+            fi
+            if [[ -z "$_eff_base" ]] && git rev-parse --verify --quiet main >/dev/null; then
+                _eff_base="main"
+            fi
+            if [[ -z "$_eff_base" ]]; then
+                # Refuse rather than silently produce empty diff — branch-target
+                # was the literal SEV-1 from petrics dogfood. Emit a magic
+                # sentinel that review_run detects to fail loudly.
+                echo "BRANCH_BASE_UNRESOLVED" >&2
+                return 0
+            fi
+            local _mb
+            _mb=$(git merge-base HEAD "$_eff_base" 2>/dev/null || true)
+            if [[ -z "$_mb" ]]; then
+                echo "BRANCH_MERGEBASE_UNRESOLVED:$_eff_base" >&2
+                return 0
+            fi
+            diff_content=$(git diff "$_mb..HEAD" 2>/dev/null || true)
+            ;;
         [0-9]*)       diff_content=$(gh pr diff "$target" 2>/dev/null || true) ;;
         *)
             if [[ -f "$target" ]] && [[ -r "$target" ]] && head -n 20 "$target" 2>/dev/null | grep -Ec "^(diff --git|--- |\+\+\+ |@@ )" >/dev/null; then
@@ -334,6 +369,11 @@ review_run() {
     publish=$(echo "$profile_json"    | jq -r '.publish    // "ask"')
     debate=$(echo "$profile_json"     | jq -r '.debate     // "auto"')
     history=$(echo "$profile_json"    | jq -r '.history    // "auto"')
+    # lestephen.35 (petrics dogfood SEV-1 on GH #11): parse `base` field
+    # so target=branch can compute merge-base diff against the right ref.
+    # Previously `base` was set by /octo:visual-review but never read.
+    local base
+    base=$(echo "$profile_json"       | jq -r '.base       // ""')
     # lestephen.23: optional `reference` field — a path to the source-of-truth
     # artifact (mockup PNG, screenshot, design spec PDF). When set, the
     # mockup-context preamble is prepended to every reviewer prompt so reviewers
@@ -466,8 +506,32 @@ review_run() {
     fi
 
     # ── Collect diff ─────────────────────────────────────────────────────────
-    local diff_content=""
-    diff_content=$(review_collect_diff "$target")
+    # lestephen.35: capture stderr separately so branch-target sentinels
+    # (BRANCH_BASE_UNRESOLVED / BRANCH_MERGEBASE_UNRESOLVED) can be detected
+    # and surfaced as errors rather than swallowed into "no changes".
+    local diff_content="" _collect_err=""
+    _collect_err=$(mktemp)
+    diff_content=$(review_collect_diff "$target" "$base" 2>"$_collect_err")
+    if [[ -s "$_collect_err" ]]; then
+        local _sentinel
+        _sentinel=$(head -n 1 "$_collect_err")
+        case "$_sentinel" in
+            BRANCH_BASE_UNRESOLVED)
+                log ERROR "review_run: target=branch but no base ref resolved (no profile.base, no origin/HEAD, no origin/main, no main). Pass --base <ref> explicitly."
+                echo "{\"findings\":[],\"error\":\"branch-target needs a base ref; pass --base <ref> or configure origin/HEAD\"}" > "$findings_file"
+                rm -f "$_collect_err"
+                return 1
+                ;;
+            BRANCH_MERGEBASE_UNRESOLVED:*)
+                local _bad_base="${_sentinel#BRANCH_MERGEBASE_UNRESOLVED:}"
+                log ERROR "review_run: target=branch but git merge-base HEAD '$_bad_base' returned nothing (no shared history). Check that '$_bad_base' is a valid ref reachable from HEAD."
+                echo "{\"findings\":[],\"error\":\"merge-base unresolved against base=$_bad_base\"}" > "$findings_file"
+                rm -f "$_collect_err"
+                return 1
+                ;;
+        esac
+    fi
+    rm -f "$_collect_err"
 
     if [[ -z "$diff_content" ]]; then
         log WARN "review_run: no diff found for target=$target"
@@ -632,6 +696,9 @@ TOOLS YOU SHOULD CALL (per-token, not just per-review):
     python3 ${_plugin_dir_q}/scripts/helpers/sample_pixel.py ${_ref_q} <x> <y>
     → outputs hex color like '#1b2227'
     → requires Pillow: 'pip install Pillow' (script errors with helpful hint)
+    → for high-frequency content (icon edges, text, antialiased borders), add
+      '--patch 3' (or 5) to average an N×N region — single-pixel sampling
+      can be unrepresentative of the perceived token colour. lestephen.35.
   Compute deltaE color distance (CIE76 by default):
     python3 ${_plugin_dir_q}/scripts/helpers/delta_e.py <hex1> <hex2>
     → pure-stdlib; no install needed

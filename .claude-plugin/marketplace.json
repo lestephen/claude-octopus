@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "lestephen fork of nyldn/claude-octopus \u2014 bug fixes + knowledge-work skills + autonomous-mode consensus gate.",
-    "version": "9.38.0-lestephen.34",
+    "version": "9.38.0-lestephen.35",
     "owner": {
       "name": "lestephen",
       "url": "https://github.com/lestephen"
@@ -20,7 +20,7 @@
         "url": "https://github.com/lestephen/claude-octopus.git"
       },
       "description": "Fork of nyldn/claude-octopus with bug fixes, knowledge-work skills (defensibility, argument-strength, critique), autonomous-mode consensus gate, and --image vision dispatch primitive. Drop-in plugin-compatible with upstream; install in place of or alongside it. See FORK_PATCHES.md for the per-patch index.",
-      "version": "9.38.0-lestephen.34",
+      "version": "9.38.0-lestephen.35",
       "author": {
         "name": "lestephen",
         "url": "https://github.com/lestephen"

@@ -485,7 +485,28 @@ ${heuristic_ctx}"
         echo "# Task ID: $task_id" >> "$result_file"
         echo "# Role: ${role:-none}" >> "$result_file"
         echo "# Phase: ${phase:-none}" >> "$result_file"
-        echo "# Prompt: $prompt" >> "$result_file"
+        # lestephen.35 (petrics dogfood polish on GH #11): for long prompts
+        # (e.g. /octo:visual-review preamble + agent specialty + agent_prompt_base),
+        # the inline echo dumped hundreds of lines into the result file header
+        # before any actual finding showed up. Now truncate inline to 200 chars
+        # and write the full prompt to a sibling .prompt.md file for audit.
+        local _prompt_len=${#prompt}
+        if [[ $_prompt_len -gt 200 ]]; then
+            local _prompt_path="${result_file%.md}.prompt.md"
+            printf '%s' "$prompt" > "$_prompt_path"
+            # Strip newlines from the preview so the `# Prompt:` header stays
+            # on a single line (closes gemini SEV-2 from GH #11 reopen
+            # consensus: multi-line preview could break automated header parsing).
+            local _prompt_preview="${prompt:0:200}"
+            _prompt_preview="${_prompt_preview//$'\n'/ ↩ }"  # replace LF with visible marker
+            _prompt_preview="${_prompt_preview//$'\r'/}"     # strip CR
+            echo "# Prompt: ${_prompt_preview}… ($_prompt_len chars; full prompt at $_prompt_path)" >> "$result_file"
+        else
+            # Short prompts: still single-line safety
+            local _short_safe="${prompt//$'\n'/ ↩ }"
+            _short_safe="${_short_safe//$'\r'/}"
+            echo "# Prompt: $_short_safe" >> "$result_file"
+        fi
         echo "# Started: $(date)" >> "$result_file"
         echo "" >> "$result_file"
         echo "## Output" >> "$result_file"
