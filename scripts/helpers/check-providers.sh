@@ -3,8 +3,26 @@
 # Single-source script for checking which AI providers are available.
 # Used by skills (via Bash tool) to populate the activation banner.
 #
-# Output format: one line per provider, "name:available" or "name:missing"
-# Exit code: always 0 (availability is informational, not an error)
+# Output format (lestephen.45 — closes GH #5):
+#   <name>:available:<capabilities>
+#   <name>:missing
+#
+# capabilities is a comma-separated list. Currently emitted:
+#   text          — text-only via headless CLI
+#   text,vision   — text + image-attachment vision via headless CLI
+#                   (verified empirically per lestephen.24 retest)
+#
+# Backward compat: legacy consumers that grep for ":available" still match
+# (substring match on "provider:available:text"). New consumers can filter
+# on the "vision" capability mechanically:
+#   check-providers.sh | grep ',vision' | cut -d: -f1
+# (the comma anchors against the comma-separated caps list so we don't
+# match a hypothetical future provider named "visionary".)
+#
+# Override: set OCTO_PROVIDER_VISION=comma,separated,list to promote
+# listed providers to text,vision without editing this map (ad-hoc tests).
+#
+# Exit code: always 0 (availability is informational, not an error).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -16,13 +34,45 @@ bash "${SCRIPT_DIR}/ensure-plugin-root.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/../lib/cursor-agent.sh" 2>/dev/null || true
 source "${SCRIPT_DIR}/../lib/provider-allowlist.sh" 2>/dev/null || true
 
+# Capability map per provider. Conservative default: text. Vision listed
+# only for providers verified empirically (lestephen.24 vision retest:
+# both gemini and claude --print see images via path-reference in prompt
+# body; codex via -i flag). Unverified providers get text only.
+_octo_provider_caps() {
+    local provider="$1"
+    local caps
+    case "$provider" in
+        codex|claude|gemini) caps="text,vision" ;;
+        copilot|qwen|opencode|cursor-agent|perplexity|ollama|openrouter)
+            caps="text" ;;
+        *) caps="text" ;;
+    esac
+    # OCTO_PROVIDER_VISION override: comma-separated provider names that
+    # the operator has manually verified for vision. Adds "vision" to the
+    # caps list without editing the case above.
+    if [[ -n "${OCTO_PROVIDER_VISION:-}" ]]; then
+        local _v
+        IFS=',' read -r -a _v <<< "$OCTO_PROVIDER_VISION"
+        for _p in "${_v[@]}"; do
+            if [[ "$_p" == "$provider" && ",${caps}," != *",vision,"* ]]; then
+                caps="${caps},vision"
+            fi
+        done
+    fi
+    echo "$caps"
+}
+
 provider_status() {
     local provider="$1"
     local status="$2"
     if declare -f octo_provider_allowed >/dev/null 2>&1 && ! octo_provider_allowed "$provider"; then
         status="missing"
     fi
-    printf "%s:%s\n" "$provider" "$status"
+    if [[ "$status" == "available" ]]; then
+        printf "%s:%s:%s\n" "$provider" "$status" "$(_octo_provider_caps "$provider")"
+    else
+        printf "%s:%s\n" "$provider" "$status"
+    fi
 }
 
 cursor_agent_status="missing"

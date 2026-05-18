@@ -87,7 +87,17 @@ If zero vision providers are available, refuse: print the failure and exit non-z
 
 @skills/blocks/provider-check.md
 
-Then filter to vision-capable providers. **Under interface_version 2 (lestephen.24 retest)** all three of `codex`, headless `claude` (`--print`), and `gemini` headless have working vision via this dispatch path (universal mechanism: image absolute path in the prompt body, plus codex `-i` flag belt-and-suspenders). Include all three when available — running multiple vision providers in parallel is exactly the point of this library skill. `qwen`/`cursor-agent` likely work (they fork gemini CLI) but are unverified; `copilot`/`perplexity`/`ollama`/`opencode`/`openrouter` are unverified, treat findings from them as advisory until you spot-check.
+Then mechanically filter to vision-capable providers via the capability tag emitted by `check-providers.sh` (lestephen.45 — closes GH #5):
+
+```bash
+VISION_PROVIDERS=$(bash "${HOME}/.claude-octopus/plugin/scripts/helpers/check-providers.sh" \
+                   | grep ',vision' | cut -d: -f1)
+echo "Vision-capable providers detected: $VISION_PROVIDERS"
+```
+
+If `VISION_PROVIDERS` is empty, refuse per the failure-modes table — the library skill cannot deliver multi-LLM image inspection with zero vision providers.
+
+The capability map lives in `check-providers.sh::_octo_provider_caps`. **Verified by lestephen.24 vision retest**: `codex`, `claude` (`--print`), and `gemini` all see images via this dispatch path (universal mechanism: image absolute path in the prompt body, plus codex `-i` flag belt-and-suspenders). Unverified providers (`qwen`, `cursor-agent`, `copilot`, `perplexity`, `ollama`, `opencode`, `openrouter`) report `text` only. Operators can promote one ad-hoc via `OCTO_PROVIDER_VISION=name1,name2 bash check-providers.sh`; if a promotion proves out empirically, edit the capability map in `check-providers.sh` and document the verification.
 
 ### STEP 2: Validate inputs
 
