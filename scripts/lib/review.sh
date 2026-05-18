@@ -341,6 +341,14 @@ review_run() {
     # code-internal consistency. Closes the cheapest leg of GH #11. Full pixel-
     # attachment via --image plumbing into spawn_agent is a follow-up.
     reference=$(echo "$profile_json"  | jq -r '.reference  // ""')
+    # lestephen.33 (closes GH #11 expensive-leg cheap-half): optional
+    # `visual.*` profile fields drive the sample-pixel/delta-e tooling.
+    # Without these, the cheap leg from .23 still applies — preamble only.
+    # With them, reviewers are instructed to actually CALL the tools per
+    # token, closing the "no tool means eyeballing" gap from team feedback.
+    local visual_delta_e_threshold visual_render_script
+    visual_delta_e_threshold=$(echo "$profile_json" | jq -r '.visual.delta_e_threshold // 5.0')
+    visual_render_script=$(echo "$profile_json"     | jq -r '.visual.render_script    // ""')
     if [[ "$target" == "fresh" ]]; then
         target="working-tree"
         history="fresh"
@@ -350,6 +358,11 @@ review_run() {
     if [[ -n "$reference" && ! -f "$reference" ]]; then
         log "WARN" "review_run: reference path does not exist: $reference (skipping preamble)"
         reference=""
+    fi
+    # Validate render_script if set
+    if [[ -n "$visual_render_script" && ! -x "$visual_render_script" ]]; then
+        log "WARN" "review_run: visual.render_script not executable: $visual_render_script (skipping render-diff)"
+        visual_render_script=""
     fi
 
     # lestephen.28 (closes GH #14): export the reference path as OCTO_AGENT_IMAGES
@@ -570,9 +583,118 @@ review_run() {
             *.pdf)                                  _ref_kind="PDF spec" ;;
             *.md|*.txt|*.rst)                       _ref_kind="text spec" ;;
         esac
-        reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.24):
+        # lestephen.33 (closes GH #11 expensive-leg cheap-half per team
+        # feedback): preamble now includes a tool-use protocol with concrete
+        # commands the reviewer SHOULD run, not just an instruction to "look
+        # at the artifact". Closes the "no tool means eyeballing" failure
+        # mode: reviewers can run sample_pixel + delta_e against named
+        # coordinates and assert against the threshold mechanically.
+        #
+        # v2 fixes from consensus dispatch:
+        # - Plugin-dir resolution mirrors bin/octo-consensus (env → canonical
+        #   → walk-up from this script). Closes gemini SEV-1 + claude SEV-2
+        #   "hardcoded path 404s for non-canonical installs".
+        # - Reference path is shell-quoted via printf %q so paths-with-spaces
+        #   work (gemini SEV-2).
+        # - Pillow setup note included so reviewers know to install if missing
+        #   (gemini SEV-2 dependency-management; tools already error helpfully).
+        # - Coord-mapping gap acknowledged explicitly (claude SEV-2); preamble
+        #   instructs reviewers what to do when no @sample annotations exist.
+        local _plugin_dir=""
+        if [[ -n "${OCTOPUS_PLUGIN_DIR:-}" && -d "$OCTOPUS_PLUGIN_DIR" ]]; then
+            _plugin_dir="$OCTOPUS_PLUGIN_DIR"
+        elif [[ -d "$HOME/.claude-octopus/plugin/scripts/helpers" ]]; then
+            _plugin_dir="$HOME/.claude-octopus/plugin"
+        else
+            # Walk up from review.sh's location: $PLUGIN_ROOT/scripts/lib/review.sh
+            local _here
+            _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P 2>/dev/null)" || _here=""
+            if [[ -n "$_here" && -d "$_here/../helpers" ]]; then
+                _plugin_dir="$(cd "$_here/../.." && pwd -P)"
+            else
+                _plugin_dir="(plugin-dir-not-resolved; set OCTOPUS_PLUGIN_DIR)"
+            fi
+        fi
+        local _ref_q _plugin_dir_q
+        _ref_q=$(printf '%q' "$reference")
+        # lestephen.33 v3 fix (both providers SEV-2): also quote _plugin_dir
+        # so paths-with-spaces work (npm-install under /Users/Lucy Smith/...
+        # or under /home/.../My Project/...). v2 quoted ref + render but
+        # missed plugin_dir in the same heredoc.
+        _plugin_dir_q=$(printf '%q' "$_plugin_dir")
+        local _render_script_q=""
+        [[ -n "$visual_render_script" ]] && _render_script_q=$(printf '%q' "$visual_render_script")
+        local _tool_protocol=""
+        if [[ "$_ref_kind" == "image mockup" ]]; then
+            _tool_protocol="
+TOOLS YOU SHOULD CALL (per-token, not just per-review):
+  Sample a pixel from the mockup at coords (x, y):
+    python3 ${_plugin_dir_q}/scripts/helpers/sample_pixel.py ${_ref_q} <x> <y>
+    → outputs hex color like '#1b2227'
+    → requires Pillow: 'pip install Pillow' (script errors with helpful hint)
+  Compute deltaE color distance (CIE76 by default):
+    python3 ${_plugin_dir_q}/scripts/helpers/delta_e.py <hex1> <hex2>
+    → pure-stdlib; no install needed
+    → outputs float; threshold for THIS project is ${visual_delta_e_threshold}
+    → findings with deltaE > ${visual_delta_e_threshold} are flagged
+       category 'visual-divergence' severity 'normal'
+  Detect 0x-prefixed hex literals (e.g. Pixi.js color codes):
+    git grep -nE '0x[0-9a-fA-F]{6}' -- '*.ts' '*.tsx' '*.js' '*.jsx'
+    → these are equivalent to #-prefixed hex; sample-and-compare both
+${visual_render_script:+
+  Render the project for rendered-output comparison (project-supplied):
+    bash ${_plugin_dir_q}/scripts/helpers/render_diff.sh ${_render_script_q}
+    → outputs absolute path to the rendered screenshot on its last stdout
+       line; sample THAT against the mockup at the same coords to catch
+       rendering-pipeline divergence (Tailwind compilation, CSS specificity,
+       GL color literals, alpha compositing) that token-only inspection misses.}
+
+WHEN TO CALL TOOLS (mechanical trigger):
+- For EVERY color hex literal added/changed in the diff (whether #-prefixed
+  or 0x-prefixed), sample the corresponding mockup coord and compare. Do
+  this per literal, not per file.
+- For each design-token file change (tailwind.config.*, *.css, *.scss,
+  *.tokens.*, styles.ts), repeat per added/changed value.
+- If a diff comment says \"sampled from mockup at (x,y)\" or has '// @sample
+  (x,y)' annotation, VERIFY by running sample_pixel at those coords —
+  the comment may be wrong (that was the lestephen.23 trigger case).
+
+COORD-MAPPING GAP (acknowledged honestly):
+The diff usually does NOT carry mockup coordinates per token. When a hex
+literal lacks an explicit '// @sample (x,y)' annotation:
+1. Inspect the mockup to FIND a candidate region the token semantically
+   represents (e.g. 'canvas.DEFAULT' → main background area; 'accent' →
+   the most prominent non-background fill). Use the descriptive name in
+   the diff to guide which mockup region to sample.
+2. Sample at the center of that region; if uncertain about the region,
+   sample at multiple coords (corners, center, edges) and report the
+   sampled range.
+3. Flag with category 'visual-coord-unverified' (NOT 'visual-divergence')
+   when the coord-to-token mapping required guessing; this signals to the
+   human reader that the finding needs human-verified coords before
+   actioning. This is honest about the limit, not a workaround.
+4. Recommend the project add '// @sample (x,y)' annotations to design-
+   token definitions (in the synthesis output) so future reviews are
+   mechanical end-to-end.
+
+WHAT TO FLAG:
+- deltaE > ${visual_delta_e_threshold} (with verified coord) → category
+  'visual-divergence', severity 'normal'. Include in detail: code value,
+  sampled value, deltaE, sample coord. Example: \"canvas.DEFAULT = '#0e1a24'
+  but mockup @(680,300) = '#1b2227' (deltaE=5.83 > threshold
+  ${visual_delta_e_threshold})\".
+- deltaE > ${visual_delta_e_threshold} (with guessed coord) → category
+  'visual-coord-unverified', severity 'nit' until coords are confirmed.
+- Comment claims sampling at (x,y) but actual sample differs from code
+  value → 'visual-token-comment-mismatch'.
+- Code uses 0x-literal that is code-internally consistent but diverges
+  from rendered output → 'rendered-divergence' (requires render_script)."
+        fi
+
+        reference_preamble="VISUAL/SPEC GROUND-TRUTH (lestephen.33):
 The reference ${_ref_kind} for this work is: ${reference}
   (basename: ${_ref_basename}, size: ${_ref_size} bytes)
+${_tool_protocol}
 
 REQUIRED BEHAVIOR — apply BEFORE evaluating code-internal consistency:
 1. Open and inspect the reference. Headless CLIs in this dispatch path
@@ -581,10 +703,9 @@ REQUIRED BEHAVIOR — apply BEFORE evaluating code-internal consistency:
    actually inspected the artifact (e.g. \"I see a chartreuse accent at
    roughly the top bar\").
 2. For visual-fidelity claims (color tokens, layout constants, typography
-   weights, spacing, iconography): sample what the reference shows and
-   compare to the code values in the diff. Flag any divergence with
-   severity 'normal' and category 'visual-divergence', including the
-   sampled reference value and the code value you're contradicting.
+   weights, spacing, iconography): when the reference is an image, USE
+   THE TOOLS ABOVE — don't eyeball. Sample mockup pixels at specific
+   coords and compute deltaE against code values mechanically.
 3. For PDF / text-spec references: read the spec and compare claims in
    the diff against the spec text. Flag contradictions as 'spec-divergence'.
 4. Do NOT silently rubber-stamp code-internal consistency (e.g. \"canvas

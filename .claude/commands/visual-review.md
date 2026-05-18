@@ -1,6 +1,6 @@
 ---
 command: visual-review
-description: "Multi-LLM code review with mockup-context preamble forcing reviewers to ground tokens against a reference artifact (lestephen.23 — closes GH #11 cheapest leg)"
+description: "Multi-LLM code review with mockup-context preamble + sample_pixel/delta_e tooling forcing reviewers to ground tokens against a reference artifact (lestephen.23 cheap leg + lestephen.33 tooling leg per GH #11)"
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch|pr|staged] <reference-path>'
 ---
 
@@ -158,6 +158,31 @@ Vision providers (lestephen.24 retest — all see attached pixels):
 All three providers will inspect the reference artifact pixels alongside the diff.
 ```
 
+## Visual-review tooling (lestephen.33 — per team's structural feedback on GH #11)
+
+The cheap-leg (.23) preamble told reviewers to "look at the artifact"; the team noted this just reproduces the eyeballing failure mode that motivated the issue. lestephen.33 ships standalone tooling reviewers can CALL to mechanically sample-and-compare:
+
+- `scripts/helpers/sample_pixel.py <image> <x> <y>` — outputs `#rrggbb` or `r,g,b`
+- `scripts/helpers/delta_e.py <hex1> <hex2>` — outputs deltaE distance (CIE76 by default; --method cie94|ciede2000 for alternatives)
+- `scripts/helpers/render_diff.sh <project-script>` — runs a project-supplied render script that produces a screenshot (project handles dev-server lifecycle + Playwright/etc.)
+
+The reviewer fleet's mockup-context preamble (in `review.sh`) now includes:
+- A TOOLS YOU SHOULD CALL block listing exact command invocations with the current reference path substituted
+- A WHEN TO CALL TOOLS mechanical-trigger list (per-token, not per-review)
+- A WHAT TO FLAG criterion using `visual.delta_e_threshold` from the profile
+
+The original Phase 4 canvas-color bug from GH #11's report (`canvas.DEFAULT = '#0e1a24'` vs sampled mockup `#1b2227`) measures deltaE = 5.83 — would have been flagged at the default threshold of 5.0.
+
+## Profile fields (lestephen.33)
+
+```yaml
+visual:
+  delta_e_threshold: 5.0           # CIE76; default 5.0 (matches typical workflows)
+  render_script: ./scripts/render-for-review.sh  # optional, for rendered-vs-mockup checks
+```
+
+The render_script (when set) must be executable and end its stdout with the absolute path to the produced screenshot — see `scripts/helpers/render_diff.sh` header for the contract.
+
 ## Follow-up (deferred to dedicated issue)
 
-The full visual-diff specialist with Playwright screenshot + deltaE-2000 comparison is GH #11 enhancement (1) — multi-day work, tracked as a follow-up. This command implements enhancements (2) `reference` field, (3) preamble, and (4) shortcut from that issue's lightweight leg.
+The full visual-diff specialist agent — a dedicated Round-1 fleet member whose job is structured tool calls + JSON findings (claim/ground_truth/deltaE/threshold) — is GH #11 enhancement (1) proper. The tools-and-preamble combo shipped here is sufficient for petrics' immediate workflow; the dedicated agent is a follow-up tracked as a new issue (will be filed after this patch lands).
