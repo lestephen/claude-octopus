@@ -1,0 +1,126 @@
+name: Update Marketplace Pin
+
+# Auto-update lestephen/claude-octopus-marketplace's pin to the latest
+# v9.38.0-lestephen.N tag whenever a new fork tag is pushed here.
+#
+# This decouples consumer install path from per-patch attention: users add
+# the marketplace once and `/plugin install octo@lestephen-octo` always
+# resolves to the newest release tag, without manual marketplace.json edits.
+#
+# Required repo secrets:
+#   MARKETPLACE_UPDATE_TOKEN — fine-grained PAT (or classic with `repo` scope)
+#     authorized to push to lestephen/claude-octopus-marketplace. The default
+#     GITHUB_TOKEN can't write across repos, so this is required.
+#
+# Trigger: push of any tag matching v*-lestephen.* (the fork's release tags).
+
+on:
+  push:
+    tags:
+      - 'v*-lestephen.*'
+
+  # Manual trigger for backfilling or fixing a missed sync. Pass the tag
+  # explicitly via the input — the workflow runs the same update logic.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Fork tag to pin (e.g. v9.38.0-lestephen.33)'
+        required: true
+        type: string
+
+permissions:
+  contents: read   # Only reading from this repo; cross-repo push uses MARKETPLACE_UPDATE_TOKEN
+
+jobs:
+  update-marketplace-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          # Validate tag shape so a stray tag doesn't trigger an unwanted bump
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-lestephen\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' does not match expected pattern v<x.y.z>-lestephen.<N>. Refusing to update marketplace."
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"        >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check out marketplace repo
+        uses: actions/checkout@v4
+        with:
+          repository: lestephen/claude-octopus-marketplace
+          token: ${{ secrets.MARKETPLACE_UPDATE_TOKEN }}
+          path: marketplace
+          fetch-depth: 1
+
+      - name: Update marketplace.json pin
+        id: update
+        working-directory: marketplace
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          MARKET_FILE=".claude-plugin/marketplace.json"
+
+          if [[ ! -f "$MARKET_FILE" ]]; then
+            echo "::error::$MARKET_FILE not found in marketplace repo"
+            exit 1
+          fi
+
+          # Capture old values for the commit message + idempotence check
+          OLD_TAG=$(jq -r '.plugins[0].source.ref' "$MARKET_FILE")
+          OLD_VERSION=$(jq -r '.plugins[0].version' "$MARKET_FILE")
+          if [[ "$OLD_TAG" == "$TAG" ]]; then
+            echo "Marketplace already pinned to $TAG; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep description short + link to FORK_PATCHES.md (per-patch list
+          # rots fast if we try to enumerate inline).
+          DESC="$VERSION — Multi-LLM orchestration for Claude Code. Fork of nyldn/claude-octopus@v9.38.0 with lestephen patches. See per-patch index at https://github.com/lestephen/claude-octopus/blob/$TAG/FORK_PATCHES.md."
+
+          jq --arg tag "$TAG" --arg version "$VERSION" --arg desc "$DESC" '
+            .plugins[0].source.ref = $tag
+            | .plugins[0].version = $version
+            | .plugins[0].description = $desc
+          ' "$MARKET_FILE" > "$MARKET_FILE.new"
+          mv "$MARKET_FILE.new" "$MARKET_FILE"
+
+          echo "old_tag=$OLD_TAG"     >> "$GITHUB_OUTPUT"
+          echo "old_version=$OLD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "skip=false"           >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.update.outputs.skip != 'true'
+        working-directory: marketplace
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/marketplace.json
+          git commit -m "chore: bump octo pin to ${{ steps.update.outputs.new_tag }}
+
+          Auto-updated by lestephen/claude-octopus .github/workflows/update-marketplace.yml
+          on push of tag ${{ steps.update.outputs.new_tag }}.
+
+          Pin: ${{ steps.update.outputs.old_tag }} -> ${{ steps.update.outputs.new_tag }}
+          Patch index: https://github.com/lestephen/claude-octopus/blob/${{ steps.update.outputs.new_tag }}/FORK_PATCHES.md
+          "
+          git push origin HEAD
+
+      - name: Summary
+        run: |
+          if [[ "${{ steps.update.outputs.skip }}" == "true" ]]; then
+            echo "::notice::Marketplace already pinned to ${{ steps.tag.outputs.tag }}; no update needed."
+          else
+            echo "::notice::Marketplace bumped from ${{ steps.update.outputs.old_tag }} to ${{ steps.update.outputs.new_tag }}."
+          fi

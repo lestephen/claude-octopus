@@ -19,15 +19,42 @@ Friendly fork of [`nyldn/claude-octopus`](https://github.com/nyldn/claude-octopu
 
 This fork is plugin-compatible drop-in with upstream — same `octo` plugin name, same `/octo:*` command namespace.
 
-```bash
-# Install via Claude Code plugin system
-/plugin install https://github.com/lestephen/claude-octopus
+### Recommended — install via the fork's marketplace
 
-# Or clone + symlink to your plugin dir
-git clone https://github.com/lestephen/claude-octopus ~/.claude-octopus/plugin
+The fork has a dedicated marketplace repo ([lestephen/claude-octopus-marketplace](https://github.com/lestephen/claude-octopus-marketplace)) that pins the install to a specific fork tag. Inside Claude Code:
+
+```
+/plugin marketplace add lestephen/claude-octopus-marketplace
+/plugin install octo@lestephen-octo
 ```
 
-After install, run `/octo:setup` (inherited from upstream) for the guided provider/auth wizard.
+Note the names — they're different on purpose:
+- `lestephen/claude-octopus-marketplace` is the GitHub **repo** Claude Code clones to register the marketplace.
+- `lestephen-octo` is the marketplace's self-declared `name` (from its `.claude-plugin/marketplace.json`). Claude Code references it by that name in `octo@lestephen-octo`.
+- `octo` is the plugin name (matches upstream — drop-in compatible).
+
+The marketplace pin updates automatically on every fork release via CI (see `.github/workflows/update-marketplace.yml`), so `octo@lestephen-octo` always tracks the latest `v9.38.0-lestephen.N` tag.
+
+### Development install (this repo is the source, not a marketplace)
+
+This repo itself is the plugin source, NOT a Claude Code marketplace. If you want to develop against a local checkout (and have your changes reflected immediately without re-publishing), clone outside the plugin path and symlink in:
+
+```bash
+# Clone the source outside the plugin path
+mkdir -p ~/source
+git clone https://github.com/lestephen/claude-octopus ~/source/claude-octopus
+
+# Remove any pre-existing plugin dir (incl. empty one /octo:setup may have
+# created), then symlink. `rmdir` is safe — it only deletes EMPTY dirs;
+# if something non-empty is there, deal with it manually before continuing.
+mkdir -p ~/.claude-octopus
+rmdir ~/.claude-octopus/plugin 2>/dev/null || true
+ln -sfn ~/source/claude-octopus ~/.claude-octopus/plugin
+```
+
+(The `rmdir` step matters: without it, `ln -s` into an existing directory creates a nested symlink at `~/.claude-octopus/plugin/claude-octopus → …` instead of replacing the dir. `ln -sfn` then forces overwrite if the target is a non-directory symlink. `git clone <repo> ~/.claude-octopus/plugin` directly fails because that path already exists for the same reason.)
+
+After either install path, run `/octo:setup` (inherited from upstream) for the guided provider/auth wizard.
 
 ---
 
