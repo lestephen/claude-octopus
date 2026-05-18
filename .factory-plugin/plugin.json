@@ -1,6 +1,6 @@
 {
   "name": "octo",
-  "version": "9.38.0-lestephen.39",
+  "version": "9.38.0-lestephen.40",
   "description": "Fork of nyldn/claude-octopus for Factory AI Droid \u2014 multi-LLM orchestration with knowledge-work skills and autonomous-mode consensus gate added. See FORK_PATCHES.md.",
   "author": {
     "name": "lestephen",

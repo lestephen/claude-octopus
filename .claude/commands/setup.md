@@ -374,19 +374,75 @@ Re-run provider detection to confirm everything works:
 
 **Preflight — Ensure plugin root is resolvable (run via Bash tool FIRST):**
 
+lestephen.40 (closes setup-transcript bugs 1-3): resolve via Claude Code's `installed_plugins.json` instead of a slow `find` traversal. On Windows MINGW64 the prior `find` could take ~5 minutes due to filesystem layer overhead. Reads in O(1).
+
 ```bash
 OCTO_ROOT="${HOME}/.claude-octopus/plugin"
 if [[ ! -x "$OCTO_ROOT/scripts/orchestrate.sh" ]]; then
-  helper="$OCTO_ROOT/scripts/helpers/ensure-plugin-root.sh"
-  if [[ ! -x "$helper" ]]; then
-    helper="$(find "${HOME}/.claude/plugins/cache" "${HOME}/Library/Application Support/Claude" "${LOCALAPPDATA:-/dev/null}/Claude" "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude" -maxdepth 8 -path "*/nyldn-plugins/octo/*/scripts/helpers/ensure-plugin-root.sh" -print -quit 2>/dev/null)"
+  # Strategy 1 — resolve from Claude Code's install record (fast, deterministic).
+  # The marketplace key may be octo@lestephen-octo (this fork's marketplace) OR
+  # octo@nyldn-plugins (upstream marketplace); try both.
+  install_record="${HOME}/.claude/plugins/installed_plugins.json"
+  helper=""
+  if [[ -f "$install_record" ]] && command -v jq >/dev/null 2>&1; then
+    for marketplace_key in "octo@lestephen-octo" "octo@nyldn-plugins"; do
+      install_path="$(jq -r --arg k "$marketplace_key" '
+        .plugins[$k]
+        | if . == null then "" else . | sort_by(.lastUpdated) | last | .installPath end
+      ' "$install_record" 2>/dev/null)"
+      if [[ -n "$install_path" && "$install_path" != "null" && -x "$install_path/scripts/helpers/ensure-plugin-root.sh" ]]; then
+        helper="$install_path/scripts/helpers/ensure-plugin-root.sh"
+        break
+      fi
+    done
+  fi
+  # Strategy 2 — narrow glob fallback for jq-less or no-install-record cases.
+  # v2 (consensus SEV-2 gemini): cover all OS-specific roots the original
+  # find covered (macOS Library, Windows LOCALAPPDATA, XDG). v2 also picks
+  # the LATEST version via sort -V (was alphabetical, which could pick an
+  # older version when multiple are cached).
+  if [[ -z "$helper" ]]; then
+    # Build root list — Linux/MINGW64 first (most common), then macOS, then
+    # Windows-native, then XDG. Skip /dev/null sentinels harmlessly.
+    roots=(
+      "${HOME}/.claude/plugins/cache"
+      "${HOME}/Library/Application Support/Claude/plugins/cache"
+      "${LOCALAPPDATA:-/dev/null}/Claude/plugins/cache"
+      "${XDG_DATA_HOME:-${HOME}/.local/share}/Claude/plugins/cache"
+    )
+    candidates=()
+    for root in "${roots[@]}"; do
+      [[ -d "$root" ]] || continue
+      for marketplace in lestephen-octo nyldn-plugins; do
+        for c in "$root/$marketplace/octo"/*/scripts/helpers/ensure-plugin-root.sh; do
+          [[ -x "$c" ]] && candidates+=("$c")
+        done
+      done
+    done
+    if [[ ${#candidates[@]} -gt 0 ]]; then
+      # Pick the most-recently-installed candidate via mtime (ls -t).
+      # v3 fixes from gemini v2 consensus:
+      #   - sort -V is GNU-only (broken on macOS BSD sort)
+      #   - sort -V on full paths let directory names (Library, .claude) or
+      #     marketplace IDs dominate over version numbers
+      # ls -t is POSIX-portable AND mtime correctly tracks "latest install"
+      # (Claude Code touches the install dir on /plugin install / update).
+      helper="$(ls -t "${candidates[@]}" 2>/dev/null | head -n 1)"
+    fi
   fi
   [[ -x "$helper" ]] && bash "$helper" >/dev/null 2>&1 || true
 fi
 test -x "$OCTO_ROOT/scripts/orchestrate.sh" && echo "plugin-root:ok" || echo "plugin-root:missing"
 ```
 
-If the output is `plugin-root:missing`, stop and ask the user to reinstall `octo@nyldn-plugins`, then retry setup.
+If the output is `plugin-root:missing`, stop and ask the user to reinstall via:
+
+```
+/plugin marketplace add lestephen/claude-octopus-marketplace
+/plugin install octo@lestephen-octo
+```
+
+(For upstream installs the marketplace key is `octo@nyldn-plugins` — both are recognized.)
 
 
 ```bash
