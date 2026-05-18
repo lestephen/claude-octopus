@@ -28,6 +28,19 @@ grapple_debate() {
     local task_group
     task_group=$(date +%s)
 
+    # lestephen.39 (closes GH #12): per-call timeouts were hardcoded literals
+    # (90s/120s/150s) that ignored both orchestrate.sh's -t flag and any env-
+    # var override. Real four-way audits of medium-complexity specs need
+    # ~2-4 minutes per provider (petrics measured codex=244s, claude=123s).
+    # Resolution order: per-round env > master debate env > -t flag global
+    # ($TIMEOUT) > new default 300s (was 90/120/150).
+    local _debate_default="${OCTOPUS_DEBATE_TIMEOUT:-${TIMEOUT:-300}}"
+    local _t_proposal="${OCTOPUS_DEBATE_PROPOSAL_TIMEOUT:-$_debate_default}"
+    local _t_critique="${OCTOPUS_DEBATE_CRITIQUE_TIMEOUT:-$_debate_default}"
+    local _t_rebuttal="${OCTOPUS_DEBATE_REBUTTAL_TIMEOUT:-$_debate_default}"
+    local _t_synthesis="${OCTOPUS_DEBATE_SYNTHESIS_TIMEOUT:-$_debate_default}"
+    log "DEBUG" "grapple_debate timeouts: proposal=${_t_proposal}s critique=${_t_critique}s rebuttal=${_t_rebuttal}s synthesis=${_t_synthesis}s"
+
     # Validate rounds (3-7 allowed)
     if [[ $rounds -lt 3 ]]; then
         log WARN "Minimum 3 rounds required, using 3"
@@ -185,7 +198,7 @@ Structure your response:
 4. IMPLEMENTATION: Your concrete implementation
 
 $debate_integrity_rules
-Be thorough and practical." 120 "implementer" "grapple")
+Be thorough and practical." "$_t_proposal" "implementer" "grapple")
 
     if [[ $? -ne 0 || -z "$codex_proposal" ]]; then
         echo ""
@@ -211,7 +224,7 @@ Structure your response:
 4. IMPLEMENTATION: Your concrete implementation
 
 $debate_integrity_rules
-Be thorough and practical." 120 "researcher" "grapple")
+Be thorough and practical." "$_t_proposal" "researcher" "grapple")
 
     if [[ $? -ne 0 || -z "$gemini_proposal" ]]; then
         echo ""
@@ -237,7 +250,7 @@ Structure your response:
 4. IMPLEMENTATION: Your concrete implementation
 
 $debate_integrity_rules
-Be thorough and practical." 120 "researcher" "grapple")
+Be thorough and practical." "$_t_proposal" "researcher" "grapple")
 
     if [[ $? -ne 0 || -z "$sonnet_proposal" ]]; then
         echo ""
@@ -283,7 +296,7 @@ Provide your INDEPENDENT assessment:
 - OVERLOOKED CONCERNS: What do teams typically miss when solving this?
 - CRITICAL ASSUMPTIONS: What assumptions would need to be true for any solution to work?
 - EVALUATION CRITERIA: How should solutions be judged? Rate each criterion by importance (1-10).
-$debate_integrity_rules" 90 "code-reviewer" "grapple")
+$debate_integrity_rules" "$_t_critique" "code-reviewer" "grapple")
 
         if [[ $? -ne 0 || -z "$codex_critique" ]]; then
             echo -e "${RED}❌ ${label_a} evaluation failed${NC}"
@@ -308,7 +321,7 @@ Provide your INDEPENDENT assessment:
 - OVERLOOKED CONCERNS: What do teams typically miss when solving this?
 - CRITICAL ASSUMPTIONS: What assumptions would need to be true for any solution to work?
 - EVALUATION CRITERIA: How should solutions be judged? Rate each criterion by importance (1-10).
-$debate_integrity_rules" 90 "security-auditor" "grapple")
+$debate_integrity_rules" "$_t_critique" "security-auditor" "grapple")
 
         if [[ $? -ne 0 || -z "$gemini_critique" ]]; then
             echo -e "${RED}❌ ${label_b} evaluation failed${NC}"
@@ -333,7 +346,7 @@ Provide your INDEPENDENT assessment:
 - OVERLOOKED CONCERNS: What do teams typically miss when solving this?
 - CRITICAL ASSUMPTIONS: What assumptions would need to be true for any solution to work?
 - EVALUATION CRITERIA: How should solutions be judged? Rate each criterion by importance (1-10).
-$debate_integrity_rules" 90 "code-reviewer" "grapple")
+$debate_integrity_rules" "$_t_critique" "code-reviewer" "grapple")
 
         if [[ $? -ne 0 || -z "$sonnet_critique" ]]; then
             echo -e "${RED}❌ ${label_c} evaluation failed${NC}"
@@ -366,7 +379,7 @@ ${principle_text:+Evaluate against these principles:
 $principle_text}
 
 Focus on falsification, not preference. An approach with unfalsified assumptions is stronger than one that 'feels better'.
-$debate_integrity_rules" 90 "code-reviewer" "grapple")
+$debate_integrity_rules" "$_t_critique" "code-reviewer" "grapple")
 
         if [[ $? -ne 0 || -z "$codex_critique" ]]; then
             echo -e "${RED}❌ ${label_a} critique generation failed${NC}"
@@ -396,7 +409,7 @@ ${principle_text:+Evaluate against these principles:
 $principle_text}
 
 Focus on falsification, not preference. An approach with unfalsified assumptions is stronger than one that 'feels better'.
-$debate_integrity_rules" 90 "security-auditor" "grapple")
+$debate_integrity_rules" "$_t_critique" "security-auditor" "grapple")
 
         if [[ $? -ne 0 || -z "$gemini_critique" ]]; then
             echo -e "${RED}❌ ${label_b} critique generation failed${NC}"
@@ -425,7 +438,7 @@ For each hypothesis, attempt to falsify it:
 ${principle_text:+Evaluate against these principles:
 $principle_text}
 
-$debate_integrity_rules" 90 "code-reviewer" "grapple")
+$debate_integrity_rules" "$_t_critique" "code-reviewer" "grapple")
 
         if [[ $? -ne 0 || -z "$sonnet_critique" ]]; then
             echo -e "${RED}❌ ${label_c} critique generation failed${NC}"
@@ -465,7 +478,7 @@ Respond to both critiques by:
 3. Refining your approach based on valid feedback
 
 $debate_integrity_rules
-Be specific, technical, and constructive. Focus on improving the solution." 120 "implementer" "grapple")
+Be specific, technical, and constructive. Focus on improving the solution." "$_t_rebuttal" "implementer" "grapple")
 
             if [[ $? -ne 0 || -z "$codex_rebuttal" ]]; then
                 echo ""
@@ -497,7 +510,7 @@ Respond to both critiques by:
 3. Refining your approach based on valid feedback
 
 $debate_integrity_rules
-Be specific, technical, and constructive. Focus on improving the solution." 120 "researcher" "grapple")
+Be specific, technical, and constructive. Focus on improving the solution." "$_t_rebuttal" "researcher" "grapple")
 
             if [[ $? -ne 0 || -z "$gemini_rebuttal" ]]; then
                 echo ""
@@ -529,7 +542,7 @@ Respond to both critiques by:
 3. Refining your approach based on valid feedback
 
 $debate_integrity_rules
-Be specific, technical, and constructive. Focus on improving the solution." 120 "researcher" "grapple")
+Be specific, technical, and constructive. Focus on improving the solution." "$_t_rebuttal" "researcher" "grapple")
 
             if [[ $? -ne 0 || -z "$sonnet_rebuttal" ]]; then
                 echo ""
@@ -692,7 +705,7 @@ TASK: Evaluate based on falsification survival. Provide:
 Be specific and actionable. Format as markdown."
     fi
 
-    synthesis=$(run_agent_sync "claude" "$synthesis_prompt" 150 "synthesizer" "grapple")
+    synthesis=$(run_agent_sync "claude" "$synthesis_prompt" "$_t_synthesis" "synthesizer" "grapple")
 
     if [[ $? -ne 0 || -z "$synthesis" ]]; then
         echo ""

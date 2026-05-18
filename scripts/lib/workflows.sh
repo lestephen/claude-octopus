@@ -703,6 +703,15 @@ ${_blind_spot_checklist}"
 # Phase 2: GRASP (Define) - Consensus building on approach
 # The octopus grasps the core problem with coordinated tentacles
 grasp_define() {
+    # lestephen.39 (closes GH #12): per-call timeouts were hardcoded literals
+    # (120s for definition, 180s for consensus) that ignored both -t and env
+    # vars. Resolution order: per-call env > master grasp env > -t flag global
+    # ($TIMEOUT) > new default 300s. See debate.sh for parallel structure.
+    local _grasp_default="${OCTOPUS_GRASP_TIMEOUT:-${TIMEOUT:-300}}"
+    local _t_definition="${OCTOPUS_GRASP_DEFINITION_TIMEOUT:-$_grasp_default}"
+    local _t_consensus="${OCTOPUS_GRASP_CONSENSUS_TIMEOUT:-$_grasp_default}"
+    log "DEBUG" "grasp_define timeouts: definition=${_t_definition}s consensus=${_t_consensus}s"
+
     local prompt="$1"
     local probe_results="${2:-}"
     local task_group
@@ -739,17 +748,17 @@ grasp_define() {
     log INFO "Gathering problem definitions from multiple perspectives..."
 
     local def1 def2 def3
-    def1=$(run_agent_sync "codex" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" 120 "backend-architect" "grasp") || {
+    def1=$(run_agent_sync "codex" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" "$_t_definition" "backend-architect" "grasp") || {
         log WARN "Codex failed for problem definition, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Codex unavailable for problem definition — falling back to Claude"
-        def1=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" 120 "backend-architect" "grasp") || true
+        def1=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define the core problem statement in 2-3 sentences. What is the essential challenge?" "$_t_definition" "backend-architect" "grasp") || true
     }
-    def2=$(run_agent_sync "gemini" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || {
+    def2=$(run_agent_sync "gemini" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." "$_t_definition" "researcher" "grasp") || {
         log WARN "Gemini failed for success criteria, falling back to Claude"
         echo -e " ${YELLOW}⚠${NC}  Gemini unavailable for success criteria — falling back to Claude"
-        def2=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." 120 "researcher" "grasp") || true
+        def2=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define success criteria. How will we know when this is solved correctly? List 3-5 measurable criteria." "$_t_definition" "researcher" "grasp") || true
     }
-    def3=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define constraints and boundaries. What are we NOT solving? What are hard limits?" 120 "researcher" "grasp")
+    def3=$(run_agent_sync "claude-sonnet" "Based on: $prompt\n${context}Define constraints and boundaries. What are we NOT solving? What are hard limits?" "$_t_definition" "researcher" "grasp")
 
     # Build consensus
     local consensus_file="${RESULTS_DIR}/grasp-consensus-${task_group}.md"
@@ -775,7 +784,7 @@ Output a single, clear problem definition document with:
 4. Recommended Approach"
 
     local consensus
-    consensus=$(run_agent_sync "gemini" "$consensus_prompt" 180 "synthesizer" "grasp") || {
+    consensus=$(run_agent_sync "gemini" "$consensus_prompt" "$_t_consensus" "synthesizer" "grasp") || {
         consensus="[Auto-consensus failed - manual review required]\n\nProblem: $def1\n\nSuccess Criteria: $def2\n\nConstraints: $def3"
     }
 
