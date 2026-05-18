@@ -95,6 +95,46 @@ Otherwise, dispatch a quick host-only pass to extract the apparent thesis:
 
 Surface the extracted claim to the user before continuing — if the author meant a different conclusion than the document conveys, the review will be against the wrong claim. Ask whether to proceed.
 
+### STEP 2b: Detect project format standard (lestephen.44, closes GH #2)
+
+If the project has a report format standard, reviewers MUST respect it — otherwise they apply generic-good-writing principles that conflict with the project's voice/structure conventions (real failure mode observed during dogfood: 3 of 5 structural objections conflicted with the project's standard).
+
+Detect via canonical paths in the directory tree of `$doc_path` (walk up from doc to project root):
+
+```bash
+# Resolve doc's directory; walk up looking for a format standard.
+_doc_dir=$(cd "$(dirname "$doc_path")" 2>/dev/null && pwd)
+_format_standard_path=""
+_search_dir="$_doc_dir"
+while [[ -n "$_search_dir" && "$_search_dir" != "/" ]]; do
+  for candidate in \
+    "$_search_dir/docs/report-format-standard.md" \
+    "$_search_dir/docs/format-standard.md" \
+    "$_search_dir/docs/templates/report-format.md" \
+    "$_search_dir/.octo/report-format-standard.md" \
+    "$_search_dir/report-format-standard.md"; do
+    if [[ -f "$candidate" ]]; then
+      _format_standard_path="$candidate"
+      break 2
+    fi
+  done
+  _search_dir=$(dirname "$_search_dir")
+  # Stop at filesystem root or git-root, whichever first
+  [[ -d "$_search_dir/.git" ]] && break
+done
+
+if [[ -n "$_format_standard_path" ]]; then
+  echo "📐 Format standard detected: $_format_standard_path"
+  echo "   Reviewers will be instructed to respect its structural rules."
+else
+  echo "📐 No project format standard found — reviewers will apply generic structural principles."
+fi
+```
+
+If found, capture `$_format_standard_path` for injection into reviewer prompts (especially the `structural-attack` reviewer). This is **optional** — argument-strength works without a standard; the constraint is added only when one exists.
+
+For format-specific lint (does the doc comply with its standard at the sentence/section level), defer to a dedicated format-lint skill if the project has one (e.g., `/eki-kw:report-lint`). Argument-strength tests argument STRENGTH, not format compliance.
+
 ### STEP 3: Invoke `skill-lib-multi-review-doc` with adversarial reviewers
 
 Invoke `skill-lib-multi-review-doc` with:
@@ -116,12 +156,24 @@ Invoke `skill-lib-multi-review-doc` with:
       4. Suggest the minimum revision that would absorb the objection without conceding the claim.
 
       Focus on: missing evidence, weak inferential steps, alternative explanations the document does not rule out, methodology choices that look arbitrary, places where the document protests too much.
+
+      <if _format_standard_path is set: Do not propose changes that would violate the project's report format standard at <_format_standard_path>; structural revisions belong to the structural-attack reviewer who is briefed on the standard.>
     }`
 
   - `{agent_type: gemini, perspective_label: structural-attack, prompt: |
       You are reading this document as a skeptical reader who is looking for places where the argument STRUCTURE leaks.
 
       The author wants to land this claim: <claim_to_protect>
+
+      <if _format_standard_path is set, insert this block verbatim:
+      FORMAT STANDARD CONSTRAINT: This document follows the project's report
+      format standard at <_format_standard_path>. Read the standard before
+      forming structural objections. Do NOT propose changes that would
+      violate the standard's section sequencing, heading conventions, or
+      placement rules — those are project-mandated and not in scope here.
+      Focus structural critique on argument flow WITHIN the standard's
+      sections (e.g., topic-sentence weakness, claim-evidence proximity,
+      hedging, telegraphing), not on the section structure itself.>
 
       Your job: identify the strongest STRUCTURAL objections. For each:
       1. State the objection (the reader's complaint about how the argument is laid out).
@@ -144,6 +196,8 @@ Invoke `skill-lib-multi-review-doc` with:
       4. For NEGATIVE reactions, suggest the minimum revision that would prevent the reaction without diluting the claim.
 
       Be specific to the audience type. A "supplier" reads differently than a "regulator" who reads differently than an "internal-skeptic". Frame the reactions in their voice and incentives, not in a neutral reviewer voice.
+
+      <if _format_standard_path is set: Do not propose revisions that would violate the project's report format standard at <_format_standard_path>; the audience expects that format. Frame reactions to existing structure, not requests to restructure.>
     }`
 
 - `synthesis_prompt` = |
