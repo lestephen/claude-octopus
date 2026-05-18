@@ -75,12 +75,14 @@ def require_frontmatter(
     errors: list[str],
     *,
     validate_name: bool = False,
-) -> None:
+    name_must_match_dir: bool = False,
+    description_max: int | None = None,
+) -> dict[str, str]:
     text = file.read_text(encoding="utf-8", errors="replace")
     meta, err = extract_frontmatter(text)
     if err:
         errors.append(f"{rel(root, file)}: {err}")
-        return
+        return {}
 
     for field in required:
         if not meta.get(field):
@@ -88,6 +90,30 @@ def require_frontmatter(
 
     if validate_name and meta.get("name") and not KEBAB_RE.match(meta["name"]):
         errors.append(f"{rel(root, file)}: name must be kebab-case: {meta['name']}")
+
+    # lestephen.42 (closes GH #3 parts 1+3): catch frontmatter drift that
+    # smoke-test caught in lestephen.12 — file lived under one slug, name
+    # field pointed at another.
+    if name_must_match_dir and meta.get("name"):
+        parent = file.parent.name
+        if meta["name"] != parent:
+            errors.append(
+                f"{rel(root, file)}: name '{meta['name']}' does not match parent dir '{parent}'"
+            )
+
+    # Description length cap — guards against accidentally-pasted novellas
+    # in the description field, which is meant for a one-line summary.
+    # Current max across skills is 149 chars; 250 gives growth room while
+    # still flagging egregious drift.
+    if description_max is not None and meta.get("description"):
+        desc = meta["description"]
+        if len(desc) > description_max:
+            errors.append(
+                f"{rel(root, file)}: description is {len(desc)} chars "
+                f"(max {description_max}); should be a one-line summary"
+            )
+
+    return meta
 
 
 def validate_json(root: Path, file: Path, errors: list[str]) -> dict | None:
@@ -129,13 +155,30 @@ def validate_json_files(root: Path, errors: list[str]) -> None:
 def validate_skills(root: Path, errors: list[str]) -> int:
     checked = 0
     for file in sorted(root.glob("skills/*/SKILL.md")):
-        require_frontmatter(root, file, ("name", "description"), errors, validate_name=True)
+        require_frontmatter(
+            root,
+            file,
+            ("name", "description"),
+            errors,
+            validate_name=True,
+            name_must_match_dir=True,
+            description_max=250,
+        )
         checked += 1
 
+    # Legacy single-file skills don't have a parent dir to match against;
+    # skip the name-matches-dir check for them.
     legacy = root / ".claude" / "skills"
     if legacy.is_dir():
         for file in sorted(legacy.glob("*.md")):
-            require_frontmatter(root, file, ("name", "description"), errors, validate_name=True)
+            require_frontmatter(
+                root,
+                file,
+                ("name", "description"),
+                errors,
+                validate_name=True,
+                description_max=250,
+            )
             checked += 1
 
     return checked
@@ -147,7 +190,34 @@ def validate_commands(root: Path, errors: list[str]) -> int:
         if not directory.is_dir():
             continue
         for file in sorted(directory.glob("*.md")):
-            require_frontmatter(root, file, ("description",), errors)
+            meta = require_frontmatter(
+                root, file, ("description",), errors, description_max=250
+            )
+            if not meta:
+                checked += 1
+                continue
+
+            # lestephen.42 (closes GH #3 part 3): if a `command:` field is
+            # present, it must match the file stem (otherwise /octo:foo
+            # routes to a phantom command). Optional because some commands
+            # are aliased via the file name alone.
+            stem = file.stem
+            if meta.get("command") and meta["command"] != stem:
+                errors.append(
+                    f"{rel(root, file)}: command '{meta['command']}' does not match file stem '{stem}'"
+                )
+
+            # lestephen.42 (closes GH #3 part 3): if a `skill:` field is
+            # present, the target directory under skills/ must exist.
+            # Catches typos that would silently route to nothing.
+            if meta.get("skill"):
+                skill_dir = root / "skills" / meta["skill"]
+                if not skill_dir.is_dir():
+                    errors.append(
+                        f"{rel(root, file)}: skill '{meta['skill']}' "
+                        f"references missing directory skills/{meta['skill']}/"
+                    )
+
             checked += 1
 
     return checked

@@ -15,7 +15,7 @@ validate-plugin-assembly:
 test-all: test-smoke test-unit test-integration test-e2e
 
 # Smoke tests (pre-commit, <30s)
-test-smoke: test-plugin-name
+test-smoke: test-plugin-name validate-plugin-assembly
 	@echo "Running smoke tests..."
 	@./tests/run-all.sh smoke
 
