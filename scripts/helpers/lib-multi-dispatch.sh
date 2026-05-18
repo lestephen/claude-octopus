@@ -261,6 +261,12 @@ declare -a TASK_FINGERPRINTS  # sha256 of (agent|prompt|doc|images) — GH #8
 # lestephen.30 (closes GH #8): also load fingerprints — a label match alone
 # isn't enough. If the reviewer prompt, doc content, agent_type, or image set
 # changes between runs, the prior output is stale and must NOT be reused.
+# lestephen.43 (closes GH #20 SEV-2 #2 — empirical false-alarm note):
+# Both the resume-read path (line ~281: `label=$(jq -r '.label' ...)`) and
+# the dispatch-loop path (line ~340: `label=$(jq -r '.[$i].perspective_label')`)
+# use $(jq -r ...). Bash command substitution strips ONLY trailing newlines,
+# not internal ones, so a label like "line1\nline2" round-trips identically
+# (verified with a fixture). The lookup works as expected; no fix needed.
 declare -A PRIOR_SUCCESS_LABELS       # label -> output_file
 declare -A PRIOR_SUCCESS_AGENTS       # label -> agent_type
 declare -A PRIOR_SUCCESS_IDS          # label -> task_id
@@ -312,11 +318,17 @@ if [[ ${#IMAGES[@]} -gt 0 ]]; then
     done
 fi
 
-# Pre-compute DOC content sha256 — hash the file BYTES directly, not the
-# $(cat)-stripped version. v2 SEV-2 gemini fix: $(cat) strips trailing
-# newlines, so a doc that only differs by trailing whitespace would be
-# treated as identical. Hashing the file bytes preserves all bytes.
-_doc_sha=$(sha256sum "$DOC_PATH" 2>/dev/null | cut -c1-16)
+# Pre-compute DOC content sha256 — hash the SAME DOC_CONTENT that gets
+# baked into the reviewer prompt (line 247), so the fingerprint reflects
+# "what the model actually saw" rather than "raw file bytes".
+#
+# lestephen.43 (closes GH #20 SEV-2 #1): v2 used `sha256sum "$DOC_PATH"`
+# (file bytes), which over-dispatches when a doc differs only by trailing
+# whitespace — gemini dissent v3 flagged this as inconsistent with the
+# prompt's $(cat)-stripped content. The fingerprint should match what the
+# model sees: if the prompt is byte-equivalent across runs, the model
+# produces equivalent output, so the prior result is reusable.
+_doc_sha=$(printf '%s' "$DOC_CONTENT" | sha256sum | cut -c1-16)
 
 # Helper: compute reviewer fingerprint.
 # Inputs: agent_type, prompt. Globals: $_doc_sha, $_images_fp_input.
@@ -471,21 +483,26 @@ done
 # labels/agent_types/paths — would produce invalid JSON and break --resume).
 # jq -n with --arg/--argjson handles all escaping automatically.
 {
-    # Build reviewers array as a JSON document. Loop emits one object per
-    # reviewer; jq -s concatenates and the outer jq merges with metadata.
-    _reviewers_array='[]'
+    # Build reviewers array via slurp-at-end pattern.
+    # lestephen.43 (closes GH #20 SEV-2 #3): v1 accumulated into a single
+    # bash var by re-running `jq --argjson existing "$_reviewers_array"`
+    # on each iteration, which was O(N^2) jq invocations AND hit ARG_MAX
+    # at large reviewer counts (each --argjson re-parses the accumulated
+    # array). Now: append one JSON object per line to a temp file, then
+    # `jq -s` slurp once at the end. O(N) and ARG_MAX-safe.
+    _reviewers_tmp=$(mktemp "${TMPDIR:-/tmp}/octo-reviewers.XXXXXX.jsonl")
     for i in "${!TASK_LABELS[@]}"; do
-        _reviewers_array=$(jq -n \
-            --argjson existing "$_reviewers_array" \
+        jq -nc \
             --arg label       "${TASK_LABELS[$i]}" \
             --arg agent_type  "${TASK_AGENTS[$i]}" \
             --arg task_id     "${TASK_IDS[$i]}" \
             --arg outcome     "${TASK_OUTCOMES[$i]}" \
             --arg output_file "$OUTPUT_DIR/${TASK_AGENTS[$i]}-${TASK_IDS[$i]}.md" \
             --arg fingerprint "${TASK_FINGERPRINTS[$i]:-MISSING}" \
-            '$existing + [{label: $label, agent_type: $agent_type, task_id: $task_id, outcome: $outcome, output_file: $output_file, fingerprint: $fingerprint}]')
+            '{label: $label, agent_type: $agent_type, task_id: $task_id, outcome: $outcome, output_file: $output_file, fingerprint: $fingerprint}' \
+            >> "$_reviewers_tmp"
     done
-    jq -n \
+    jq -s \
         --arg output_dir "$OUTPUT_DIR" \
         --arg doc_path "$DOC_PATH" \
         --arg doc_sha "$_doc_sha" \
@@ -493,8 +510,9 @@ done
         --argjson total "$reviewers_count" \
         --argjson success "$SUCCESS_COUNT" \
         --argjson failed "$FAILED_COUNT" \
-        --argjson reviewers "$_reviewers_array" \
-        '{output_dir: $output_dir, doc_path: $doc_path, doc_sha: $doc_sha, min_reviewers: $min_reviewers, total: $total, success: $success, failed: $failed, fingerprint_version: 1, reviewers: $reviewers}'
+        '{output_dir: $output_dir, doc_path: $doc_path, doc_sha: $doc_sha, min_reviewers: $min_reviewers, total: $total, success: $success, failed: $failed, fingerprint_version: 1, reviewers: .}' \
+        "$_reviewers_tmp"
+    rm -f "$_reviewers_tmp"
 } > "$OUTPUT_DIR/dispatch.json"
 
 # Validation gate
