@@ -581,15 +581,22 @@ ${heuristic_ctx}"
             if [[ -n "$_spawn_image_note" ]]; then
                 log "DEBUG" "spawn_agent: $_spawn_image_note"
                 local _tmpres="${RESULTS_DIR}/.tmp-imgnote-${task_id}.md"
+                # lestephen.42 (closes GH #19 gemini SEV-2): awk previously
+                # returned 0 even when the `## Output` line wasn't matched,
+                # silently dropping the image note when the section header
+                # was missing. END block now exits 1 on match failure so
+                # the else fallback (append-at-EOF) reliably fires.
                 if awk -v note="$_spawn_image_note" '
                     !inserted && /^## Output$/ { print note; print ""; inserted=1 }
                     { print }
+                    END { if (!inserted) exit 1 }
                 ' "$result_file" > "$_tmpres" 2>/dev/null; then
                     mv "$_tmpres" "$result_file"
                 else
-                    # Defensive: awk failed (e.g. ## Output not found yet).
-                    # Append note at end-of-file so it's still in the artifact,
-                    # and clean up the failed tempfile (consensus v2 SEV-3).
+                    # Defensive: awk match failure (no `## Output` header yet)
+                    # OR process failure. Append note at end-of-file so it's
+                    # still in the artifact, and clean up the failed/partial
+                    # tempfile (consensus v2 SEV-3 from .28).
                     rm -f "$_tmpres"
                     echo "$_spawn_image_note" >> "$result_file"
                 fi

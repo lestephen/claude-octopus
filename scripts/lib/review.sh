@@ -427,6 +427,34 @@ review_run() {
     local _saved_octo_agent_images_was_set="${OCTO_AGENT_IMAGES+yes}"
     local _saved_octo_agent_images="${OCTO_AGENT_IMAGES:-}"
     local _restore_octo_agent_images=false
+
+    # lestephen.42 (closes GH #19): defensive cleanup helper used by BOTH
+    # the RETURN trap AND an explicit call at the end of review_run.
+    # Belt-and-suspenders against the gemini SEV-2 (nested function setting
+    # its own RETURN trap clobbering ours) and the claude SEV-3
+    # (export-before-trap leak window — addressed by installing the trap
+    # BEFORE we export). Idempotent: safe to call twice.
+    _review_restore_octo_agent_images() {
+        [[ "$_restore_octo_agent_images" == "true" ]] || return 0
+        if [[ "$_saved_octo_agent_images_was_set" != "yes" ]]; then
+            unset OCTO_AGENT_IMAGES
+        else
+            export OCTO_AGENT_IMAGES="$_saved_octo_agent_images"
+        fi
+        # Mark restored so a redundant call is a true no-op.
+        _restore_octo_agent_images=false
+    }
+
+    # Install the trap BEFORE export so a failure inside the resolve-path
+    # block (or the export itself under set -e) can't bypass restoration.
+    # _restore_octo_agent_images stays false until we successfully export,
+    # so the trap is a no-op until then. Signal-interrupt (SIGINT) cleanup
+    # is moot — OCTO_AGENT_IMAGES is exported into this orchestrate.sh
+    # process only; when the process dies, the env var dies with it. The
+    # trap only matters for restoring across function returns within this
+    # same shell process.
+    trap _review_restore_octo_agent_images RETURN
+
     if [[ -n "$reference" ]]; then
         # Use realpath -m for robust absolution (works even if parent path is
         # tricky); fall back to cd-based for portability if realpath missing.
@@ -450,20 +478,6 @@ review_run() {
             export OCTO_AGENT_IMAGES="$_ref_abs"
             _restore_octo_agent_images=true
             log "INFO" "review_run: exporting OCTO_AGENT_IMAGES=$_ref_abs for review fleet"
-        fi
-    fi
-    # Restore the env var when this function exits (via EXIT trap on a subshell
-    # would be cleaner, but review_run isn't subshelled — use explicit RETURN
-    # trap so we restore on any return path including early errors).
-    if [[ "$_restore_octo_agent_images" == "true" ]]; then
-        # Quote the saved value carefully (could contain spaces, semicolons).
-        # The trap fires when review_run returns, before caller resumes.
-        # shellcheck disable=SC2064 # we WANT _saved_octo_agent_images expanded now
-        if [[ "$_saved_octo_agent_images_was_set" != "yes" ]]; then
-            trap 'unset OCTO_AGENT_IMAGES' RETURN
-        else
-            # set-but-empty preserved as "" (not unset)
-            trap "export OCTO_AGENT_IMAGES=$(printf '%q' "$_saved_octo_agent_images")" RETURN
         fi
     fi
 
@@ -1201,6 +1215,13 @@ Return ONLY JSON: {\"findings\": [...ranked, deduplicated findings...]}"
 
     # v9.0: Print provider report card — always last, impossible to miss
     print_provider_report "$provider_status_file"
+
+    # lestephen.42 (closes GH #19 gemini SEV-2): explicit cleanup as
+    # belt-and-suspenders against the RETURN trap being clobbered by a
+    # nested function that sets its own RETURN trap. Idempotent — the
+    # trap will run AFTER this returns and be a no-op (the helper resets
+    # _restore_octo_agent_images to false after restoring).
+    _review_restore_octo_agent_images
 }
 
 # post_inline_comments: posts findings as inline PR comments via gh API
