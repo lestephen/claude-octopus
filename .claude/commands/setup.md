@@ -28,7 +28,11 @@ printf "codex:%s\n" "$(command -v codex >/dev/null 2>&1 && echo installed || ech
 # `codex --version` which only proves the binary runs — that lied
 # "ok" even when unauthenticated, then detect-providers later said "none"
 # and the user saw a confusing mismatch.
-if [[ -f "$HOME/.codex/auth.json" ]]; then
+# lestephen.51: also check $USERPROFILE for Windows Git Bash where $HOME
+# may diverge (e.g., $HOME=/z/ but actual codex auth at $USERPROFILE/.codex).
+if [[ -f "$HOME/.codex/auth.json" ]] \
+   || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+        && [[ -f "${USERPROFILE}/.codex/auth.json" ]]; }; then
   printf "codex_auth:oauth\n"
 elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
   printf "codex_auth:api-key\n"
@@ -73,9 +77,12 @@ else
     printf "gemini_auth:stale-blob\n"
   elif [[ -n "${GEMINI_API_KEY:-}" || -n "${GOOGLE_API_KEY:-}" ]]; then
     printf "gemini_auth:api-key\n"
-  elif [[ -f "$HOME/.gemini/.env" ]] && grep -m1 -E '^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*(["'\'']?)\{' "$HOME/.gemini/.env" 2>/dev/null | grep -qE 'accessToken|tokenType|serverName'; then
+  elif _octo_gemini_env=""; [[ -f "$HOME/.gemini/.env" ]] && _octo_gemini_env="$HOME/.gemini/.env"; [[ -z "$_octo_gemini_env" && -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" && -f "${USERPROFILE}/.gemini/.env" ]] && _octo_gemini_env="${USERPROFILE}/.gemini/.env"; [[ -n "$_octo_gemini_env" ]] && grep -m1 -E '^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*(["'\'']?)\{' "$_octo_gemini_env" 2>/dev/null | grep -qE 'accessToken|tokenType|serverName'; then
     printf "gemini_auth:stale-blob\n"
-  elif [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+  elif [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+       || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+            && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
+    # lestephen.51: Windows Git Bash $HOME != $USERPROFILE handling.
     printf "gemini_auth:oauth\n"
   elif [[ "$(uname -s)" == "Darwin" ]] && command -v security >/dev/null 2>&1 && command -v gemini >/dev/null 2>&1 && { command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; }; then
     _tb="timeout"; command -v timeout >/dev/null 2>&1 || _tb="gtimeout"
@@ -85,7 +92,7 @@ else
     printf "gemini_auth:none\n"
   fi
 fi
-unset _octo_plugin_dir _tb _v _octo_env_stale_blob
+unset _octo_plugin_dir _tb _v _octo_env_stale_blob _octo_gemini_env
 printf "perplexity:%s\n" "$([ -n "${PERPLEXITY_API_KEY:-}" ] && echo configured || echo missing)"
 printf "copilot:%s\n" "$(command -v copilot >/dev/null 2>&1 && echo installed || echo missing)"
 printf "qwen:%s\n" "$(command -v qwen >/dev/null 2>&1 && echo installed || echo missing)"

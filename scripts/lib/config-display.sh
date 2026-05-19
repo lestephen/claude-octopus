@@ -425,7 +425,11 @@ setup_wizard() {
         _gemini_state=$(octo_resolve_gemini_auth)
     elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
         _gemini_state="api-key"
-    elif [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+    elif [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+         || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+              && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
+        # lestephen.51: $HOME-only fallback would miss Windows Git Bash
+        # users where $HOME != $USERPROFILE.
         _gemini_state="oauth"
     fi
     case "$_gemini_state" in
@@ -492,9 +496,21 @@ setup_wizard() {
     # STEP 5: Codex/OpenAI Subscription Tier (v4.8)
     # ═══════════════════════════════════════════════════════════════════════════
     ((++current_step))
-    if command -v codex &>/dev/null && [[ -f "$HOME/.codex/auth.json" || -n "${OPENAI_API_KEY:-}" ]]; then
+    # lestephen.51: was `[[ -f "$HOME/.codex/auth.json" ]]` which fails on
+    # Windows Git Bash where $HOME != $USERPROFILE. octo_user_file_exists
+    # from preflight.sh checks both. Helper-first; inline fallback for
+    # standalone-source-of-config-display safety.
+    local _codex_auth_exists=false
+    if declare -f octo_user_file_exists >/dev/null 2>&1; then
+        octo_user_file_exists ".codex/auth.json" && _codex_auth_exists=true
+    elif [[ -f "$HOME/.codex/auth.json" ]] \
+         || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+              && [[ -f "${USERPROFILE}/.codex/auth.json" ]]; }; then
+        _codex_auth_exists=true
+    fi
+    if command -v codex &>/dev/null && { [[ "$_codex_auth_exists" == "true" ]] || [[ -n "${OPENAI_API_KEY:-}" ]]; }; then
         PROVIDER_CODEX_INSTALLED="true"
-        [[ -f "$HOME/.codex/auth.json" ]] && PROVIDER_CODEX_AUTH_METHOD="oauth" || PROVIDER_CODEX_AUTH_METHOD="api-key"
+        [[ "$_codex_auth_exists" == "true" ]] && PROVIDER_CODEX_AUTH_METHOD="oauth" || PROVIDER_CODEX_AUTH_METHOD="api-key"
 
         echo -e "${CYAN}Step $current_step/$total_steps: Codex/OpenAI Subscription Tier${NC}"
 
@@ -551,7 +567,10 @@ setup_wizard() {
 
         if [[ "$NON_INTERACTIVE" == "true" ]]; then
             # Auto-detect based on auth method
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+            # lestephen.51: handle Windows Git Bash $HOME != $USERPROFILE.
+            if [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+               || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                    && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
                 gemini_tier_choice=1  # Free tier for OAuth users
                 echo -e "  ${GREEN}✓${NC} Auto-detected: Free tier (OAuth authenticated)"
             else
@@ -804,10 +823,23 @@ setup_wizard() {
     if ! command -v gemini &>/dev/null; then
         all_good=false
     fi
-    if [[ -z "${OPENAI_API_KEY:-}" ]] && [[ ! -f "$HOME/.codex/auth.json" ]]; then
+    # lestephen.51: dual-location auth file checks for Windows Git Bash
+    # where $HOME may diverge from $USERPROFILE.
+    local _codex_authed=false _gemini_oauth=false
+    if [[ -f "$HOME/.codex/auth.json" ]] \
+       || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+            && [[ -f "${USERPROFILE}/.codex/auth.json" ]]; }; then
+        _codex_authed=true
+    fi
+    if [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+       || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+            && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
+        _gemini_oauth=true
+    fi
+    if [[ -z "${OPENAI_API_KEY:-}" ]] && [[ "$_codex_authed" != "true" ]]; then
         all_good=false
     fi
-    if [[ ! -f "$HOME/.gemini/oauth_creds.json" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    if [[ "$_gemini_oauth" != "true" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
         all_good=false
     fi
 
@@ -903,16 +935,22 @@ check_first_run() {
     if [[ ! -f "$SETUP_CONFIG_FILE" ]]; then
         # Codex auth: either env var OR ~/.codex/auth.json (the `codex login`
         # default). Mirrors doctor_check_auth at lib/doctor.sh:347.
+        # lestephen.51: also check $USERPROFILE on Windows Git Bash.
         local codex_authed=false
-        if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -f "$HOME/.codex/auth.json" ]]; then
+        if [[ -n "${OPENAI_API_KEY:-}" ]] \
+           || [[ -f "$HOME/.codex/auth.json" ]] \
+           || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                && [[ -f "${USERPROFILE}/.codex/auth.json" ]]; }; then
             codex_authed=true
         fi
         # Gemini auth: any of GEMINI_API_KEY / GOOGLE_API_KEY / OAuth creds.
         # Mirrors doctor_check_auth at lib/doctor.sh:360.
         local gemini_authed=false
-        if [[ -n "${GEMINI_API_KEY:-}" ]] || \
-           [[ -n "${GOOGLE_API_KEY:-}" ]] || \
-           [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+        if [[ -n "${GEMINI_API_KEY:-}" ]] \
+           || [[ -n "${GOOGLE_API_KEY:-}" ]] \
+           || [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+           || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
             gemini_authed=true
         fi
 
@@ -977,10 +1015,16 @@ preflight_cache_invalidate() {
 
 
 check_codex_auth_freshness() {
-    local auth_file="$HOME/.codex/auth.json"
+    # lestephen.51: resolve $HOME vs $USERPROFILE for Windows Git Bash.
+    local auth_file=""
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+        auth_file="$HOME/.codex/auth.json"
+    elif [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" && -f "${USERPROFILE}/.codex/auth.json" ]]; then
+        auth_file="${USERPROFILE}/.codex/auth.json"
+    fi
 
     # Skip if no auth file (API key auth or no codex — handled elsewhere)
-    [[ -f "$auth_file" ]] || return 0
+    [[ -n "$auth_file" && -f "$auth_file" ]] || return 0
 
     local expires_at=""
 

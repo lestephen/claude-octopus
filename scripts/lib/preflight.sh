@@ -8,6 +8,44 @@ if ! declare -f _is_cursor_agent_binary >/dev/null 2>&1; then
     source "${_preflight_lib_dir}/cursor-agent.sh" 2>/dev/null || true
 fi
 
+# lestephen.51: Windows Git Bash HOME-vs-USERPROFILE divergence helper.
+#
+# On Windows running Git Bash inside Claude Code, $HOME may be mapped to
+# something like /z/ (a network home or unrelated drive) while the actual
+# user profile — where CLI tools like codex and gemini write their auth
+# files — lives at $USERPROFILE (which Git Bash translates to e.g.
+# /c/Users/StephenLe). The two diverge silently and existing $HOME-only
+# checks report all CLIs as unauthenticated even when they're fully set up.
+#
+# These helpers check both locations. They are platform-agnostic: on
+# Linux/macOS where HOME==USERPROFILE (or USERPROFILE is unset),
+# the fallback is a no-op.
+#
+# octo_user_file_exists <relative-path>
+#   Returns 0 if either $HOME/<rel> or $USERPROFILE/<rel> exists.
+octo_user_file_exists() {
+    local rel="$1"
+    [[ -f "$HOME/$rel" ]] && return 0
+    if [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]]; then
+        [[ -f "${USERPROFILE}/$rel" ]] && return 0
+    fi
+    return 1
+}
+
+# octo_user_file_path <relative-path>
+#   Prints the first existing path on stdout. Prefers $HOME over
+#   $USERPROFILE. Returns 0 on success, 1 if neither exists.
+#   Callers should fall back to $HOME/<rel> only when they NEED a path
+#   (e.g., for a "write" or grep operation) and a missing file is OK.
+octo_user_file_path() {
+    local rel="$1"
+    [[ -f "$HOME/$rel" ]] && { printf '%s\n' "$HOME/$rel"; return 0; }
+    if [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]]; then
+        [[ -f "${USERPROFILE}/$rel" ]] && { printf '%s\n' "${USERPROFILE}/$rel"; return 0; }
+    fi
+    return 1
+}
+
 # lestephen.50 (closes GH #28): Gemini auth diagnostic helpers.
 #
 # Context: gemini-cli stores the API key via HybridTokenStorage which uses
@@ -104,21 +142,25 @@ octo_resolve_gemini_auth() {
         echo "api-key"
         return 0
     fi
-    # 2. stale-blob in ~/.gemini/.env (before oauth_creds — gemini-cli
+    # 2. stale-blob in .gemini/.env (before oauth_creds — gemini-cli
     # .env loader shadows oauth_creds when GEMINI_API_KEY is set in .env,
     # even to garbage). Match unquoted, double-quoted, or single-quoted
     # JSON wrapper that contains OAuthCredentials field names (avoids
     # false-positive on legitimate `{`-prefixed enterprise tokens).
     # codex v10 SEV-1: use `grep -m1` to avoid SIGPIPE-under-pipefail
     # when there are duplicate matching lines.
-    if [[ -f "$HOME/.gemini/.env" ]] && \
-       grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*([\"']?)\{" "$HOME/.gemini/.env" 2>/dev/null \
+    # lestephen.51: resolve $HOME-vs-$USERPROFILE so Windows Git Bash
+    # users with $HOME != $USERPROFILE are handled.
+    local _gemini_env
+    _gemini_env=$(octo_user_file_path ".gemini/.env" 2>/dev/null) || _gemini_env=""
+    if [[ -n "$_gemini_env" ]] && \
+       grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?GEMINI_API_KEY[[:space:]]*=[[:space:]]*([\"']?)\{" "$_gemini_env" 2>/dev/null \
        | grep -qE 'accessToken|tokenType|serverName'; then
         echo "stale-blob"
         return 0
     fi
     # 3. oauth_creds
-    if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+    if octo_user_file_exists ".gemini/oauth_creds.json"; then
         echo "oauth"
         return 0
     fi
@@ -192,7 +234,9 @@ STALE_BLOB_WARNING
 # GEMINI_API_KEY value (per upstream #18927 corruption). Side-effect-free
 # (no exports, no warnings). Cheap and headless-safe.
 octo_check_gemini_env_corruption() {
-    local env_file="$HOME/.gemini/.env"
+    # lestephen.51: $HOME may diverge from $USERPROFILE on Windows Git Bash.
+    local env_file
+    env_file=$(octo_user_file_path ".gemini/.env" 2>/dev/null) || env_file=""
     if [[ ! -f "$env_file" ]]; then
         echo "clean"
         return 0
@@ -286,7 +330,7 @@ cmd_detect_providers() {
     # Check Codex CLI
     if command -v codex &>/dev/null; then
         echo "CODEX_STATUS=ok"
-        if [[ -f "$HOME/.codex/auth.json" ]]; then
+        if octo_user_file_exists ".codex/auth.json"; then
             echo "CODEX_AUTH=oauth"
         elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
             echo "CODEX_AUTH=api-key"
@@ -428,7 +472,7 @@ cmd_detect_providers() {
     # cache file got a junk `api-key` line. Replaced with explicit
     # if/elif/else.
     local codex_auth
-    if [[ -f "$HOME/.codex/auth.json" ]]; then
+    if octo_user_file_exists ".codex/auth.json"; then
         codex_auth="oauth"
     elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
         codex_auth="api-key"
@@ -635,7 +679,10 @@ preflight_check() {
     if command -v codex &>/dev/null; then
         has_codex=true
         log DEBUG "Codex CLI: $(command -v codex)"
-        if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        # lestephen.51: was `[[ -f "$HOME/.codex/auth.json" ]]` which fails
+        # on Windows Git Bash where $HOME != $USERPROFILE (the actual codex
+        # auth location). User-reported as the trigger for this patch.
+        if octo_user_file_exists ".codex/auth.json" || [[ -n "${OPENAI_API_KEY:-}" ]]; then
             codex_auth=true
         fi
     fi

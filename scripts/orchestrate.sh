@@ -1384,7 +1384,14 @@ save_user_config() {
     # Auto-detect available API keys (check OAuth first, then API keys)
     local has_openai="false"
     local has_gemini="false"
-    [[ -f "$HOME/.codex/auth.json" || -n "${OPENAI_API_KEY:-}" ]] && has_openai="true"
+    # lestephen.51: was `[[ -f "$HOME/.codex/auth.json" ]]` which fails on
+    # Windows Git Bash where $HOME != $USERPROFILE. octo_user_file_exists
+    # checks both locations. preflight.sh is sourced earlier in
+    # orchestrate.sh startup, so the helper is available.
+    if octo_user_file_exists ".codex/auth.json" 2>/dev/null \
+       || [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        has_openai="true"
+    fi
     # lestephen.50 (closes GH #28): centralized gemini auth resolution via
     # octo_resolve_gemini_auth (defined in lib/preflight.sh, sourced
     # earlier at line ~118). Allowlist check via octo_gemini_dispatch_allowed

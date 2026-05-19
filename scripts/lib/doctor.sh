@@ -376,9 +376,30 @@ doctor_check_companions() {
 
 # --- Category 2: Auth ---
 doctor_check_auth() {
+    # lestephen.51: helper-or-inline check for Windows Git Bash $HOME vs
+    # $USERPROFILE divergence (the bug that triggered the patch).
+    # doctor.sh may be sourced standalone (smoke.sh), so we can't assume
+    # preflight.sh is loaded. Use the helper if available; inline otherwise.
+    local _codex_auth_file=false _gemini_auth_file=false
+    if declare -f octo_user_file_exists >/dev/null 2>&1; then
+        octo_user_file_exists ".codex/auth.json" && _codex_auth_file=true
+        octo_user_file_exists ".gemini/oauth_creds.json" && _gemini_auth_file=true
+    else
+        if [[ -f "$HOME/.codex/auth.json" ]] \
+           || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                && [[ -f "${USERPROFILE}/.codex/auth.json" ]]; }; then
+            _codex_auth_file=true
+        fi
+        if [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+           || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
+            _gemini_auth_file=true
+        fi
+    fi
+
     # Codex auth
     if command -v codex &>/dev/null; then
-        if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        if [[ "$_codex_auth_file" == "true" ]] || [[ -n "${OPENAI_API_KEY:-}" ]]; then
             local method="auth.json"
             [[ -n "${OPENAI_API_KEY:-}" ]] && method="OPENAI_API_KEY"
             doctor_add "codex-auth" "auth" "pass" \
@@ -391,7 +412,7 @@ doctor_check_auth() {
 
     # Gemini auth
     if command -v gemini &>/dev/null; then
-        if [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        if [[ "$_gemini_auth_file" == "true" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]]; then
             local method="oauth_creds.json"
             [[ -n "${GEMINI_API_KEY:-}" ]] && method="GEMINI_API_KEY"
             [[ -n "${GOOGLE_API_KEY:-}" ]] && method="GOOGLE_API_KEY"
@@ -422,10 +443,12 @@ doctor_check_auth() {
             "Perplexity authenticated" "via PERPLEXITY_API_KEY"
     fi
 
-    # At least one provider must be authenticated
+    # At least one provider must be authenticated.
+    # lestephen.51: reuse the per-provider flags computed above to handle
+    # Windows Git Bash $HOME vs $USERPROFILE divergence.
     local any_auth=false
-    if [[ -f "$HOME/.codex/auth.json" ]] || [[ -n "${OPENAI_API_KEY:-}" ]] || \
-       [[ -f "$HOME/.gemini/oauth_creds.json" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] || \
+    if [[ "$_codex_auth_file" == "true" ]] || [[ -n "${OPENAI_API_KEY:-}" ]] || \
+       [[ "$_gemini_auth_file" == "true" ]] || [[ -n "${GEMINI_API_KEY:-}" ]] || [[ -n "${GOOGLE_API_KEY:-}" ]] || \
        [[ -n "${CURSOR_API_KEY:-}" ]] || grep -Eq '"authInfo"[[:space:]]*:[[:space:]]*\{' "$HOME/.cursor/cli-config.json" 2>/dev/null; then
         any_auth=true
     fi

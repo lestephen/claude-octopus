@@ -15,9 +15,16 @@ check_codex_auth() {
         return 0
     fi
 
-    # Check for Codex CLI auth token
-    local auth_file="${HOME}/.codex/auth.json"
-    if [[ -f "$auth_file" ]]; then
+    # Check for Codex CLI auth token.
+    # lestephen.51: also check $USERPROFILE on Windows Git Bash where
+    # $HOME may diverge (e.g., $HOME=/z/ but auth at $USERPROFILE/.codex).
+    local auth_file=""
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+        auth_file="$HOME/.codex/auth.json"
+    elif [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" && -f "${USERPROFILE}/.codex/auth.json" ]]; then
+        auth_file="${USERPROFILE}/.codex/auth.json"
+    fi
+    if [[ -n "$auth_file" ]]; then
         # Check if token exists and is not expired
         if command -v jq &> /dev/null; then
             local expires_at
@@ -144,8 +151,11 @@ handle_auth_command() {
             esac
 
             # Check Gemini
+            # lestephen.51: Windows Git Bash $HOME != $USERPROFILE handling.
             echo ""
-            if [[ -f "$HOME/.gemini/oauth_creds.json" ]]; then
+            if [[ -f "$HOME/.gemini/oauth_creds.json" ]] \
+               || { [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" ]] \
+                    && [[ -f "${USERPROFILE}/.gemini/oauth_creds.json" ]]; }; then
                 echo -e "  Gemini:  ${GREEN}✓ Authenticated (OAuth)${NC}"
                 local auth_type
                 auth_type=$(grep -o '"selectedType"[[:space:]]*:[[:space:]]*"[^"]*"' ~/.gemini/settings.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || echo "oauth")

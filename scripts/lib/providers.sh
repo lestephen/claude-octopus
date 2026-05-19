@@ -928,9 +928,28 @@ detect_providers() {
     local result=""
 
     # Detect Codex CLI
+    # lestephen.51: source preflight.sh on-demand so octo_user_file_exists
+    # is available. providers.sh is sourced BEFORE preflight.sh in
+    # orchestrate.sh startup; standalone smoke.sh callers may not source
+    # preflight at all. Inline fallback for safety.
     if command -v codex &>/dev/null; then
         local codex_auth="none"
-        if [[ -f "$HOME/.codex/auth.json" ]]; then
+        if ! declare -f octo_user_file_exists >/dev/null 2>&1; then
+            local _providers_lib_dir2
+            _providers_lib_dir2="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            # shellcheck disable=SC1091
+            source "${_providers_lib_dir2}/preflight.sh" 2>/dev/null || true
+        fi
+        # Helper-first; inline $HOME-only fallback if helper still missing.
+        local _has_codex_auth=false
+        if declare -f octo_user_file_exists >/dev/null 2>&1; then
+            octo_user_file_exists ".codex/auth.json" && _has_codex_auth=true
+        elif [[ -f "$HOME/.codex/auth.json" ]]; then
+            _has_codex_auth=true
+        elif [[ -n "${USERPROFILE:-}" && "${USERPROFILE}" != "$HOME" && -f "${USERPROFILE}/.codex/auth.json" ]]; then
+            _has_codex_auth=true
+        fi
+        if [[ "$_has_codex_auth" == "true" ]]; then
             codex_auth="oauth"
         elif [[ -n "${OPENAI_API_KEY:-}" ]]; then
             codex_auth="api-key"
